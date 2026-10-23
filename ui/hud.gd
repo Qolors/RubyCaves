@@ -1,0 +1,529 @@
+class_name Hud
+extends Control
+## Portrait mobile HUD from the sketch: world viewport on top (enemy HP overlay), grey action panel
+## with combat/movement tabs at the bottom, and the player's HP bar along the very bottom.
+
+signal action_chosen(action: PlayerAction)
+signal rematch_requested
+
+const T := PlayerAction.Type
+const RED := Color(1.0, 0.2, 0.2)
+const BLUE := Color(0.2, 0.7, 1.0)
+const PANEL_GREY := Color(0.33, 0.33, 0.33)
+const WINDED_COLOR := Color(1.0, 0.7, 0.3)
+
+var world_viewport: SubViewport
+var sword: SwordView
+var mini_map: MiniMap
+
+var _enemy_hp_label: Label
+var _enemy_hp_fill: ColorRect
+var _player_hp_label: Label
+var _player_hp_fill: ColorRect
+var _timer_label: Label
+var _messages: Label
+var _banner: Label
+var _status: Label
+var _flash: ColorRect
+var _slots: Array[HBoxContainer] = []
+var _combat_tab: OctagonTab
+var _move_tab: OctagonTab
+var _game_over: Control
+var _game_over_title: Label
+var _game_over_body: Label
+var _enemy_winded: Label
+var _player_winded: Label
+
+var _tab := PlayerAction.Group.MOVEMENT
+var _actions: Array[PlayerAction] = []
+var _in_conflict := false
+var _staggered := false
+var _my_winded := 0
+var _locked := false
+var _log: Array = []  # [text, time]
+var _clock := 0.0
+
+
+func _ready() -> void:
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	theme = _build_theme()
+
+	var root := VBoxContainer.new()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.add_theme_constant_override("separation", 0)
+	add_child(root)
+
+	root.add_child(_build_world_area())
+	var sep := ColorRect.new()
+	sep.color = Color.BLACK
+	sep.custom_minimum_size = Vector2(0, 4)
+	root.add_child(sep)
+	root.add_child(_build_action_panel())
+	root.add_child(_build_player_hp())
+
+	_build_game_over()
+	_select_tab(PlayerAction.Group.MOVEMENT)
+
+
+# ---------- construction ----------
+
+func _build_world_area() -> Control:
+	var area := Control.new()
+	area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	area.clip_contents = true
+
+	var container := SubViewportContainer.new()
+	container.stretch = true
+	container.stretch_shrink = 2
+	container.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	container.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	area.add_child(container)
+	world_viewport = SubViewport.new()
+	world_viewport.msaa_3d = Viewport.MSAA_DISABLED
+	world_viewport.handle_input_locally = false
+	container.add_child(world_viewport)
+
+	sword = SwordView.new()
+	area.add_child(sword)
+
+	_flash = ColorRect.new()
+	_flash.color = Color(1, 0, 0, 0)
+	_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	area.add_child(_flash)
+
+	# Enemy HP (top-left), turn timer (top-right).
+	var top := VBoxContainer.new()
+	top.position = Vector2(12, 8)
+	top.custom_minimum_size = Vector2(160, 0)
+	top.add_theme_constant_override("separation", 2)
+	area.add_child(top)
+	var name_row := HBoxContainer.new()
+	name_row.add_child(_label("ENEMY"))
+	_enemy_winded = _winded_tag()
+	name_row.add_child(_enemy_winded)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_row.add_child(spacer)
+	_enemy_hp_label = _label("10/10")
+	name_row.add_child(_enemy_hp_label)
+	top.add_child(name_row)
+	var bar := _bar(160, 10)
+	_enemy_hp_fill = bar[1]
+	top.add_child(bar[0])
+
+	_messages = _label("", 14, Color(1.0, 0.85, 0.4))
+	_messages.position = Vector2(12, 50)
+	_messages.size = Vector2(250, 70)
+	area.add_child(_messages)
+
+	_timer_label = _label("", 26)
+	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_timer_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	_timer_label.position = Vector2(-70, 2)
+	_timer_label.size = Vector2(60, 28)
+	area.add_child(_timer_label)
+
+	var map_toggle := Button.new()
+	map_toggle.text = "MAP"
+	map_toggle.toggle_mode = true
+	map_toggle.focus_mode = Control.FOCUS_NONE
+	map_toggle.add_theme_font_size_override("font_size", 14)
+	map_toggle.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	map_toggle.position = Vector2(-50, 34)
+	map_toggle.size = Vector2(40, 20)
+	area.add_child(map_toggle)
+	mini_map = MiniMap.new()
+	mini_map.visible = false
+	mini_map.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mini_map.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	mini_map.position = Vector2(-90, 60)
+	area.add_child(mini_map)
+	map_toggle.toggled.connect(func(on: bool): mini_map.visible = on)
+
+	_banner = _label("", 24)
+	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_banner.visible = false
+	_banner.add_theme_color_override("font_outline_color", Color.BLACK)
+	_banner.add_theme_constant_override("outline_size", 4)
+	_banner.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_banner.position = Vector2(-100, 110)
+	_banner.size = Vector2(200, 28)
+	area.add_child(_banner)
+	return area
+
+
+func _build_action_panel() -> Control:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(0, 156)
+	var style := StyleBoxFlat.new()
+	style.bg_color = PANEL_GREY
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", style)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	panel.add_child(row)
+
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.add_theme_constant_override("separation", 4)
+	row.add_child(left)
+	_status = _label("", 14, Color(0.85, 0.85, 0.85))
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status.custom_minimum_size = Vector2(0, 28)
+	left.add_child(_status)
+
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 4)
+	left.add_child(grid)
+	for i in 9:
+		var slot := HBoxContainer.new()
+		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slot.custom_minimum_size = Vector2(0, 30)
+		slot.add_theme_constant_override("separation", 2)
+		grid.add_child(slot)
+		_slots.append(slot)
+
+	var tabs := VBoxContainer.new()
+	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("separation", 8)
+	row.add_child(tabs)
+	_combat_tab = OctagonTab.new()
+	_combat_tab.icon_glyph = OctagonTab.Glyph.SWORD
+	_combat_tab.base_color = RED
+	_move_tab = OctagonTab.new()
+	_move_tab.icon_glyph = OctagonTab.Glyph.FEET
+	_move_tab.base_color = BLUE
+	_combat_tab.pressed.connect(func(): _select_tab(PlayerAction.Group.COMBAT))
+	_move_tab.pressed.connect(func(): _select_tab(PlayerAction.Group.MOVEMENT))
+	tabs.add_child(_combat_tab)
+	tabs.add_child(_move_tab)
+	return panel
+
+
+func _build_player_hp() -> Control:
+	var bar := Control.new()
+	bar.custom_minimum_size = Vector2(0, 22)
+	var bg := ColorRect.new()
+	bg.color = Color(0.25, 0.05, 0.05)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar.add_child(bg)
+	_player_hp_fill = ColorRect.new()
+	_player_hp_fill.color = RED
+	_player_hp_fill.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+	bar.add_child(_player_hp_fill)
+	_player_hp_label = _label("10/10", 22, Color.BLACK)
+	_player_hp_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0))
+	_player_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_player_hp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_player_hp_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar.add_child(_player_hp_label)
+	_player_winded = _winded_tag()
+	_player_winded.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+	_player_winded.offset_left = 6
+	_player_winded.offset_right = 90
+	_player_winded.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	bar.add_child(_player_winded)
+	return bar
+
+
+func _build_game_over() -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.75)
+	dim.visible = false
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(dim)
+	_game_over = dim
+
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.add_theme_constant_override("separation", 14)
+	dim.add_child(box)
+
+	_game_over_title = _label("", 48)
+	_game_over_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(_game_over_title)
+	_game_over_body = _label("", 20)
+	_game_over_body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(_game_over_body)
+
+	var again := Button.new()
+	again.text = "REMATCH"
+	again.custom_minimum_size = Vector2(160, 44)
+	again.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	again.add_theme_font_size_override("font_size", 22)
+	again.pressed.connect(func(): rematch_requested.emit())
+	box.add_child(again)
+
+
+static func _label(text: String, font_size := 0, color := Color.WHITE) -> Label:
+	var l := Label.new()
+	l.text = text
+	if font_size > 0:
+		l.add_theme_font_size_override("font_size", font_size)
+	if color != Color.WHITE:
+		l.add_theme_color_override("font_color", color)
+	return l
+
+
+static func _bar(width: float, height: float) -> Array:
+	var bar := Control.new()
+	bar.custom_minimum_size = Vector2(width, height)
+	var bg := ColorRect.new()
+	bg.color = Color(0.25, 0.05, 0.05, 0.85)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar.add_child(bg)
+	var fill := ColorRect.new()
+	fill.color = RED
+	fill.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+	bar.add_child(fill)
+	return [bar, fill]
+
+
+static func _winded_tag() -> Label:
+	var tag := _label("", 14, WINDED_COLOR)
+	tag.visible = false
+	return tag
+
+
+static func _build_theme() -> Theme:
+	# Browsers can't see system fonts, so the pixel font ships with the game (VT323, OFL licence).
+	var font: FontFile = load("res://assets/fonts/VT323-Regular.ttf")
+	font.antialiasing = TextServer.FONT_ANTIALIASING_NONE
+	font.hinting = TextServer.HINTING_NONE
+	font.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
+	var t := Theme.new()
+	t.default_font = font
+	t.default_font_size = 18
+
+	var box := func(bg: Color, border: Color) -> StyleBoxFlat:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = bg
+		sb.border_color = border
+		sb.set_border_width_all(2)
+		sb.set_content_margin_all(2)
+		return sb
+	t.set_stylebox("normal", "Button", box.call(Color(0.16, 0.16, 0.18), Color(0.7, 0.7, 0.7)))
+	t.set_stylebox("hover", "Button", box.call(Color(0.24, 0.24, 0.28), Color.WHITE))
+	t.set_stylebox("pressed", "Button", box.call(Color(0.9, 0.75, 0.2), Color.WHITE))
+	t.set_stylebox("disabled", "Button", box.call(Color(0.2, 0.2, 0.2), Color(0.3, 0.3, 0.3)))
+	t.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	t.set_color("font_color", "Button", Color.WHITE)
+	t.set_color("font_pressed_color", "Button", Color.BLACK)
+	t.set_color("font_disabled_color", "Button", Color(0.45, 0.45, 0.45))
+	t.set_color("font_color", "Label", Color.WHITE)
+	t.set_color("font_shadow_color", "Label", Color(0, 0, 0, 0.8))
+	t.set_constant("shadow_offset_x", "Label", 1)
+	t.set_constant("shadow_offset_y", "Label", 1)
+	return t
+
+
+# ---------- runtime API ----------
+
+## Turns of "can't flee" left for each side; both are public knowledge.
+func set_winded(mine: int, enemy: int) -> void:
+	_my_winded = mine
+	_player_winded.visible = mine > 0
+	_player_winded.text = " WINDED %d" % mine
+	_enemy_winded.visible = enemy > 0
+	_enemy_winded.text = " WINDED %d" % enemy
+
+
+func set_hp(mine: int, enemy: int) -> void:
+	_player_hp_label.text = "%d/%d" % [maxi(0, mine), DuelRules.MAX_HP]
+	_enemy_hp_label.text = "%d/%d" % [maxi(0, enemy), DuelRules.MAX_HP]
+	_player_hp_fill.anchor_right = clampf(mine / float(DuelRules.MAX_HP), 0, 1)
+	_enemy_hp_fill.anchor_right = clampf(enemy / float(DuelRules.MAX_HP), 0, 1)
+	_player_hp_fill.offset_right = 0
+	_enemy_hp_fill.offset_right = 0
+
+
+func set_timer(seconds: float) -> void:
+	var s := ceili(maxf(0.0, seconds))
+	_timer_label.text = "%ds" % s
+	_timer_label.add_theme_color_override("font_color", RED if s <= 3 else Color.WHITE)
+
+
+func log_message(text: String) -> void:
+	_log.append([text, _clock])
+
+
+func flash_screen(color: Color, alpha: float) -> void:
+	_flash.color = Color(color, alpha)
+	create_tween().tween_property(_flash, "color:a", 0.0, 0.5)
+
+
+## Starts a new planning phase with the actions currently legal for the local player.
+func show_actions(actions: Array[PlayerAction], in_conflict: bool, can_ambush: bool, staggered: bool) -> void:
+	_actions = actions
+	_in_conflict = in_conflict
+	_staggered = staggered
+	_locked = false
+	_move_tab.disabled = in_conflict
+	_combat_tab.alert = can_ambush
+
+	if in_conflict:
+		_select_tab(PlayerAction.Group.COMBAT)
+	elif _tab == PlayerAction.Group.COMBAT and not can_ambush:
+		_select_tab(PlayerAction.Group.MOVEMENT)
+	else:
+		_select_tab(_tab)
+
+	if staggered:
+		_set_banner("STAGGERED!", Color(1.0, 0.6, 0.2))
+	elif in_conflict:
+		_set_banner("!! CONFLICT !!", RED)
+	elif can_ambush:
+		_set_banner("AMBUSH READY", Color(1.0, 0.85, 0.2))
+	else:
+		_set_banner("", Color.WHITE)
+
+
+func lock(chosen: PlayerAction) -> void:
+	_locked = true
+	_status.text = "LOCKED: %s" % chosen.label()
+	for slot in _slots:
+		for b in slot.get_children():
+			if b is Button:
+				b.disabled = true
+
+
+func show_game_over(title: String, color: Color, body: String) -> void:
+	_game_over_title.text = title
+	_game_over_title.add_theme_color_override("font_color", color)
+	_game_over_body.text = body
+	_game_over.visible = true
+	_set_banner("", Color.WHITE)
+
+
+func hide_game_over() -> void:
+	_game_over.visible = false
+
+
+func _set_banner(text: String, color: Color) -> void:
+	_banner.visible = text != ""
+	_banner.text = text
+	_banner.add_theme_color_override("font_color", color)
+
+
+func _select_tab(tab: int) -> void:
+	if _in_conflict:
+		tab = PlayerAction.Group.COMBAT
+	_tab = tab
+	_combat_tab.selected = tab == PlayerAction.Group.COMBAT
+	_move_tab.selected = tab == PlayerAction.Group.MOVEMENT
+	_rebuild_slots()
+
+
+func _rebuild_slots() -> void:
+	for slot in _slots:
+		for child in slot.get_children():
+			slot.remove_child(child)
+			child.queue_free()
+
+	var visible_actions := _actions.filter(func(a: PlayerAction): return a.group() == _tab)
+	for a in visible_actions:
+		var b := Button.new()
+		b.text = _short_label(a)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.focus_mode = Control.FOCUS_NONE
+		b.disabled = _locked
+		b.clip_text = true
+		var tint := Color.WHITE
+		match a.type:
+			T.AMBUSH, T.ATTACK: tint = Color(1.0, 0.4, 0.4)
+			T.GUARD: tint = Color(0.5, 0.8, 1.0)
+			T.SHOVE: tint = Color(1.0, 0.75, 0.3)
+			T.PURSUE: tint = Color(0.85, 0.55, 1.0)
+		b.add_theme_color_override("font_color", tint)
+		b.pressed.connect(func(): action_chosen.emit(a))
+		_slots[_slot_of(a.type)].add_child(b)
+
+	# Keep the 3x3 layout stable: empty slots get an invisible spacer.
+	for slot in _slots:
+		if slot.get_child_count() == 0:
+			var spacer := Control.new()
+			spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			slot.add_child(spacer)
+
+	if _locked:
+		return
+	var combat := _tab == PlayerAction.Group.COMBAT
+	if _staggered:
+		_status.text = "Off balance! You lose this turn."
+	elif combat and _in_conflict and _my_winded > 0:
+		_status.text = "WINDED: you can't flee for %d more turn(s). Stand and fight!" % _my_winded
+	elif combat and _in_conflict:
+		_status.text = "ATK>SHOVE>GUARD>ATK. Fleeing dodges all of them, but PURSUE catches a flee."
+	elif combat and visible_actions.is_empty():
+		_status.text = "No target. Get 1 tile behind or beside the enemy to AMBUSH."
+	elif combat:
+		_status.text = "Enemy's back is turned! AMBUSH cancels their move (-4)."
+	elif _actions.any(func(a: PlayerAction): return a.type == T.AMBUSH):
+		_status.text = "Enemy exposed! Tap the SWORD tab to AMBUSH."
+	elif visible_actions.any(func(a: PlayerAction): return a.veer != PlayerAction.Veer.NONE):
+		_status.text = "Junction ahead: choose which way to round it (L/R)."
+	else:
+		_status.text = "Choose your move."
+
+
+static func _slot_of(t: int) -> int:
+	match t:
+		T.TURN_LEFT, T.GUARD: return 0
+		T.MOVE_FORWARD, T.AMBUSH, T.ATTACK: return 1
+		T.TURN_RIGHT, T.SHOVE: return 2
+		T.MOVE_LEFT, T.RETREAT_LEFT: return 3
+		T.STEP_BACK, T.RETREAT_BACK: return 4
+		T.MOVE_RIGHT, T.RETREAT_RIGHT: return 5
+		T.TURN_AROUND, T.PURSUE: return 6
+		T.WAIT, T.RETREAT_THROUGH: return 7
+	return 8
+
+
+## Button text. Plain ASCII arrows so it renders with the bundled pixel font everywhere.
+static func _short_label(a: PlayerAction) -> String:
+	var label := ""
+	match a.type:
+		T.TURN_LEFT: label = "TURN L"
+		T.TURN_RIGHT: label = "TURN R"
+		T.MOVE_FORWARD: label = "^ FWD"
+		T.MOVE_LEFT: label = "< LEFT"
+		T.MOVE_RIGHT: label = "RIGHT >"
+		T.STEP_BACK: label = "v BACK"
+		T.TURN_AROUND: label = "TURN 180"
+		T.WAIT: label = "WAIT"
+		T.AMBUSH: label = "AMBUSH!"
+		T.ATTACK: label = "ATTACK"
+		T.GUARD: label = "GUARD"
+		T.SHOVE: label = "SHOVE"
+		T.PURSUE: label = "PURSUE"
+		T.RETREAT_LEFT: label = "< FLEE"
+		T.RETREAT_BACK: label = "v BACK"
+		T.RETREAT_RIGHT: label = "FLEE >"
+		T.RETREAT_THROUGH: label = "^ DASH"
+	if a.veer == PlayerAction.Veer.NONE:
+		return label
+	# Two half-width buttons share the slot: arrow of the move plus which way to round the T.
+	var arrow := ">"
+	if a.type in [T.MOVE_FORWARD, T.RETREAT_THROUGH]:
+		arrow = "^"
+	elif a.type in [T.MOVE_LEFT, T.RETREAT_LEFT]:
+		arrow = "<"
+	return "%s %s" % [arrow, "L" if a.veer == PlayerAction.Veer.LEFT else "R"]
+
+
+func _process(delta: float) -> void:
+	_clock += delta
+	_log = _log.filter(func(l): return _clock - l[1] <= 5.0)
+	while _log.size() > 4:
+		_log.pop_front()
+	_messages.text = "\n".join(_log.map(func(l): return l[0]))

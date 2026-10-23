@@ -1,0 +1,45 @@
+{
+  "name": "Figure 8 Loop Map",
+  "description": "Two 3x3 hollow grids overlapping. Top grid offset 1 right. Top_SW=Bottom_N, Top_S=Bottom_NE. Creates a central hall with multiple outlets.",
+  "nodes": [
+    {"id": "Top_NW",     "col": 1, "row": 0, "passable": true},
+    {"id": "Top_N",      "col": 2, "row": 0, "passable": true},
+    {"id": "Top_NE",     "col": 3, "row": 0, "passable": true},
+    {"id": "Top_W",      "col": 1, "row": 1, "passable": true},
+    {"id": "Top_E",      "col": 3, "row": 1, "passable": true},
+    {"id": "Top_SW",     "col": 1, "row": 2, "passable": true, "merged_with": "Bottom_N"},
+    {"id": "Top_S",      "col": 2, "row": 2, "passable": true, "merged_with": "Bottom_NE"},
+    {"id": "Top_SE",     "col": 3, "row": 2, "passable": true},
+    {"id": "Bottom_NW",  "col": 0, "row": 2, "passable": true},
+    {"id": "Bottom_W",   "col": 0, "row": 3, "passable": true},
+    {"id": "Bottom_E",   "col": 2, "row": 3, "passable": true},
+    {"id": "Bottom_SW",  "col": 0, "row": 4, "passable": true},
+    {"id": "Bottom_S",   "col": 1, "row": 4, "passable": true},
+    {"id": "Bottom_SE",  "col": 2, "row": 4, "passable": true}
+  ],
+  "edges": [
+    ["Top_NW", "Top_N"],
+    ["Top_NW", "Top_W"],
+    ["Top_N", "Top_NE"],
+    ["Top_NE", "Top_E"],
+    ["Top_W", "Top_SW"],
+    ["Top_E", "Top_SE"],
+    ["Top_SW", "Top_S"],
+    ["Top_SW", "Bottom_NW"],
+    ["Top_S", "Top_SE"],
+    ["Top_S", "Bottom_E"],
+    ["Bottom_NW", "Bottom_W"],
+    ["Bottom_W", "Bottom_SW"],
+    ["Bottom_E", "Bottom_SE"],
+    ["Bottom_SW", "Bottom_S"],
+    ["Bottom_S", "Bottom_SE"]
+  ],
+  "spawn_points": {
+    "player1": "Top_NW",
+    "player2": "Bottom_SE"
+  },
+  "spawn_facing": {
+    "player1": "South",
+    "player2": "North"
+  }
+}
