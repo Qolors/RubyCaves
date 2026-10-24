@@ -49,5 +49,6 @@ Any of these can sit behind your own `.io` domain.
 - You can only see straight ahead.
 - **Ambush**: you are 1 tile from the enemy and looking at its back or side. The enemy takes 4 damage, its action is cancelled, and a conflict starts.
 - **Conflict**: Attack beats Shove, Shove beats Guard, Guard beats Attack. Attack against Attack is a harmless clash. Fleeing (back, left, right or dash past) dodges all of those, but **Pursue** catches a flee. Any flee leaves you **winded** (no fleeing) for 3 turns. A fleer vanishes in shadow, so the direction is hidden.
+- **Focus** (3 pips, both sides visible): Attack costs 2, Shove, Pursue and fleeing cost 1, Guard gives 1 back. Out of a conflict it refills 1 per turn. A fighter on 0–1 Focus can't attack, and on 0 can only Guard, so reading Focus tells you what's coming.
 - Face-offs always put both fighters on one line. When a conflict breaks, nobody can ambush on the next turn (breakaway).
 - Win: +30 rubies. Loss: −15 rubies. Rubies are saved in `user://profile.cfg`, which is browser storage on web.

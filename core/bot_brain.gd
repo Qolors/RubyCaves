@@ -10,14 +10,17 @@ var _rng := RandomNumberGenerator.new()
 var _last_seen: MapCell = null
 var _last_seen_turn := 0
 var _flee_bias: float
+## Reads Focus: shoves a foe who can't afford to attack. Off = the old pure-habit bot (for sims).
+var _focus_aware: bool
 ## Decaying counts of the opponent's conflict picks; all flee directions share RETREAT_BACK.
 var _foe_habits := {}
 
 
 ## flee_bias: extra chance to flee in conflicts (used to sim a flee-spamming player).
-func _init(id: int, seed := -1, flee_bias := 0.0) -> void:
+func _init(id: int, seed := -1, flee_bias := 0.0, focus_aware := true) -> void:
 	_id = id
 	_flee_bias = flee_bias
+	_focus_aware = focus_aware
 	if seed >= 0:
 		_rng.seed = seed
 	else:
@@ -35,7 +38,7 @@ func decide(state: DuelState) -> PlayerAction:
 		# Remember where the fight was; if the foe vanishes, hunt from here.
 		_last_seen = me.cell
 		_last_seen_turn = state.turn
-		return _decide_conflict(me, foe, options)
+		return _decide_conflict(state, me, foe, options)
 
 	var ambush := _pick(options, T.AMBUSH)
 	if ambush != null and _rng.randf() < 0.9:
@@ -79,13 +82,21 @@ func observe(result: TurnResult) -> void:
 		_foe_habits[key] = _foe_habits.get(key, 0.0) * 0.8 + 1.0
 
 
-func _decide_conflict(me: Fighter, foe: Fighter, options: Array[PlayerAction]) -> PlayerAction:
+func _decide_conflict(state: DuelState, me: Fighter, foe: Fighter, options: Array[PlayerAction]) -> PlayerAction:
 	if options.size() == 1:
-		return options[0]  # staggered
+		return options[0]  # staggered, or out of Focus with only Guard left
 
-	# The foe is off balance and must wait: free hit.
+	# The foe is off balance and must wait: free hit (a shove if we can't afford a swing).
 	if foe.staggered:
-		return PlayerAction.new(T.ATTACK)
+		return _first(options, [T.ATTACK, T.SHOVE])
+
+	# Focus read: a foe who can't afford to attack can only guard, shove, pursue or run.
+	# Shove beats guard and pursue and cancels a shove, so it's the safe punish. At 0 Focus
+	# their only option is Guard, so it's a sure thing.
+	if _focus_aware and not state.can_afford(foe.id, T.ATTACK):
+		var shove := _pick(options, T.SHOVE)
+		if shove != null and (foe.focus == 0 or _rng.randf() < 0.75):
+			return shove
 
 	var retreats := options.filter(func(o: PlayerAction): return o.is_retreat())
 	var losing := me.hp <= DuelRules.ATTACK_DAMAGE and foe.hp > DuelRules.ATTACK_DAMAGE
@@ -106,13 +117,22 @@ func _decide_conflict(me: Fighter, foe: Fighter, options: Array[PlayerAction]) -
 			T.GUARD: counter = T.SHOVE
 			T.PURSUE: counter = T.GUARD
 			T.RETREAT_BACK: counter = T.PURSUE if can_pursue else T.ATTACK
-		return PlayerAction.new(counter)
+		return _first(options, [counter])
 	var roll := _rng.randf()
 	if can_pursue and roll < 0.12:
-		return PlayerAction.new(T.PURSUE)
+		return _first(options, [T.PURSUE])
 	if roll < 0.5:
-		return PlayerAction.new(T.ATTACK)
-	return PlayerAction.new(T.GUARD if roll < 0.77 else T.SHOVE)
+		return _first(options, [T.ATTACK])
+	return _first(options, [T.GUARD if roll < 0.77 else T.SHOVE])
+
+
+## First affordable option of the given types, else Guard (always free in a conflict).
+func _first(options: Array[PlayerAction], types: Array) -> PlayerAction:
+	for t in types + [T.GUARD]:
+		var a := _pick(options, t)
+		if a != null:
+			return a
+	return options[0]
 
 
 func _step_toward(options: Array[PlayerAction], facing: int, step: int) -> PlayerAction:

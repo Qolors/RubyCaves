@@ -60,7 +60,24 @@ func can_ambush(attacker_id: int) -> bool:
 	return a.cell.neighbor(a.facing) == b.cell and b.facing != Dirs.opposite(a.facing)
 
 
-func get_available_actions(id: int) -> Array[PlayerAction]:
+func can_afford(id: int, type: int) -> bool:
+	return DuelRules.focus_cost(type) <= fighters[id].focus
+
+
+## Legal actions for a fighter. include_unaffordable also lists conflict actions they lack the
+## Focus for, so the HUD can show them greyed out; resolve() only ever accepts affordable ones.
+func get_available_actions(id: int, include_unaffordable := false) -> Array[PlayerAction]:
+	var list := _all_actions(id)
+	if include_unaffordable or not in_conflict:
+		return list
+	var affordable: Array[PlayerAction] = []
+	for a in list:
+		if can_afford(id, a.type):
+			affordable.append(a)
+	return affordable
+
+
+func _all_actions(id: int) -> Array[PlayerAction]:
 	var list: Array[PlayerAction] = []
 	if is_over:
 		return list
@@ -80,8 +97,8 @@ func get_available_actions(id: int) -> Array[PlayerAction]:
 		list.append(PlayerAction.new(T.ATTACK))
 		list.append(PlayerAction.new(T.GUARD))
 		list.append(PlayerAction.new(T.SHOVE))
-		# Pursuing only makes sense if the other one is able to run.
-		if DuelRules.pursue_enabled and _can_flee(other(id)):
+		# Pursuing only makes sense if the other one is able to run (and has the Focus to).
+		if DuelRules.pursue_enabled and _can_flee(other(id)) and can_afford(1 - id, T.RETREAT_BACK):
 			list.append(PlayerAction.new(T.PURSUE))
 		if not _can_flee(f):
 			return list  # winded: stand and fight
@@ -213,9 +230,13 @@ func resolve(a0: PlayerAction, a1: PlayerAction) -> TurnResult:
 	if ambusher >= 0:
 		_resolve_ambush(ambusher, result)
 	elif in_conflict:
+		for i in 2:
+			fighters[i].focus = clampi(fighters[i].focus - DuelRules.focus_cost(acts[i].type), 0, DuelRules.MAX_FOCUS)
 		_resolve_conflict(acts, result)
 	else:
 		_resolve_movement(acts, result)
+		for f in fighters:
+			f.focus = mini(f.focus + DuelRules.FOCUS_REGEN, DuelRules.MAX_FOCUS)
 
 	_check_deaths(result)
 	turn += 1

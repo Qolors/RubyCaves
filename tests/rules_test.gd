@@ -17,6 +17,7 @@ func _init() -> void:
 	if not "--quick" in OS.get_cmdline_user_args():
 		run_soak()
 		run_ab()
+		run_focus_ab()
 	print("ALL PASSED" if fails == 0 else "%d FAILED" % fails)
 	quit(1 if fails > 0 else 0)
 
@@ -204,6 +205,35 @@ func run_rules() -> void:
 	s.resolve(W(), W())
 	check(s.winded_turns_left(1) == 0, "winded wears off after 3 turns")
 
+	# --- Focus ---
+	s = conf()
+	check(s.fighters[0].focus == 3 and s.fighters[1].focus == 3, "ambush turn costs no focus")
+	s.resolve(A(T.ATTACK), A(T.GUARD))
+	check(s.fighters[0].focus == 1 and s.fighters[1].focus == 3, "attack spends 2 focus, guard caps at 3")
+	s = conf()
+	s.resolve(A(T.ATTACK), A(T.ATTACK))
+	check(s.fighters[0].focus == 1 and s.fighters[1].focus == 1, "clash: both spend 2")
+	check(first_of(s.get_available_actions(0), T.ATTACK) == null, "can't attack on 1 focus")
+	check(first_of(s.get_available_actions(0, true), T.ATTACK) != null, "  ...but the HUD list still shows it (greyed)")
+	r = s.resolve(A(T.ATTACK), A(T.GUARD))
+	check(not r.has(K.BLOCKED) and s.fighters[0].focus == 2 and s.fighters[1].focus == 2, "unaffordable attack becomes a wait (+1); guard +1")
+	s = conf()
+	s.resolve(A(T.SHOVE), A(T.SHOVE))
+	check(s.fighters[0].focus == 2, "shove spends 1")
+	s = conf()
+	s.fighters[1].focus = 0
+	var broke := s.get_available_actions(1)
+	check(broke.size() == 1 and broke[0].type == T.GUARD, "0 focus: guard is the only option")
+	check(first_of(s.get_available_actions(0), T.PURSUE) == null, "no pursue vs a foe too tired to flee")
+	r = s.resolve(A(T.SHOVE), A(T.ATTACK))
+	check(r.has(K.SHOVED, 0) and s.fighters[1].hp == 9 and s.fighters[1].focus == 1, "broke fighter's attack becomes a wait (+1) and gets shoved")
+	s = conf()
+	var flee1: PlayerAction = retreats(s.get_available_actions(1))[0]
+	s.resolve(A(T.GUARD), flee1)
+	check(not s.in_conflict and s.fighters[1].focus == 2, "fleeing spends 1")
+	s.resolve(W(), W())
+	check(s.fighters[1].focus == 3, "focus refills out of conflict")
+
 
 func run_soak() -> void:
 	var games := 3000
@@ -269,3 +299,29 @@ func run_ab() -> void:
 			cfg[0], cfg[1], spam_wins / 40.0, norm_wins / 40.0, dr / 40.0, turns / 4000.0])
 	DuelRules.pursue_enabled = true
 	DuelRules.winded_turns = 3
+
+
+## Same bot on both sides, but one reads Focus (punishes a foe who can't attack) and one doesn't.
+## If Focus adds skill, reading it must win clearly more than half the time.
+func run_focus_ab() -> void:
+	var map := DuelMap.from_json(json)
+	var games := 4000
+	var aware_wins := 0
+	var draws := 0
+	var turns := 0
+	for g in games:
+		var st := DuelState.new(map)
+		var aware := g % 2
+		var bots := [BotBrain.new(0, g, 0.0, aware == 0), BotBrain.new(1, g + 4242, 0.0, aware == 1)]
+		while not st.is_over and st.turn < 400:
+			var res := st.resolve(bots[0].decide(st), bots[1].decide(st))
+			bots[0].observe(res)
+			bots[1].observe(res)
+		turns += st.turn
+		if not st.is_over or st.winner < 0:
+			draws += 1
+		elif st.winner == aware:
+			aware_wins += 1
+	var rate := aware_wins * 100.0 / games
+	print("focus A/B: focus-reading bot wins %.1f%%, draw/unfinished %.1f%%, avg turns %.1f" % [rate, draws * 100.0 / games, turns / float(games)])
+	check(rate > 55.0, "reading focus is a real edge")

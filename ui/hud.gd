@@ -11,6 +11,7 @@ const RED := Color(1.0, 0.2, 0.2)
 const BLUE := Color(0.2, 0.7, 1.0)
 const PANEL_GREY := Color(0.33, 0.33, 0.33)
 const WINDED_COLOR := Color(1.0, 0.7, 0.3)
+const FOCUS_COLOR := Color(1.0, 0.82, 0.2)
 
 var world_viewport: SubViewport
 var sword: SwordView
@@ -33,12 +34,16 @@ var _game_over_title: Label
 var _game_over_body: Label
 var _enemy_winded: Label
 var _player_winded: Label
+var _enemy_focus: FocusPips
+var _player_focus: FocusPips
 
 var _tab := PlayerAction.Group.MOVEMENT
 var _actions: Array[PlayerAction] = []
 var _in_conflict := false
 var _staggered := false
 var _my_winded := 0
+var _my_focus := DuelRules.MAX_FOCUS
+var _foe_focus := DuelRules.MAX_FOCUS
 var _locked := false
 var _log: Array = []  # [text, time]
 var _clock := 0.0
@@ -112,9 +117,16 @@ func _build_world_area() -> Control:
 	var bar := _bar(160, 10)
 	_enemy_hp_fill = bar[1]
 	top.add_child(bar[0])
+	var focus_row := HBoxContainer.new()
+	focus_row.add_theme_constant_override("separation", 6)
+	focus_row.add_child(_label("FOCUS", 14, FOCUS_COLOR))
+	_enemy_focus = FocusPips.new()
+	_enemy_focus.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	focus_row.add_child(_enemy_focus)
+	top.add_child(focus_row)
 
 	_messages = _label("", 14, Color(1.0, 0.85, 0.4))
-	_messages.position = Vector2(12, 50)
+	_messages.position = Vector2(12, 66)
 	_messages.size = Vector2(250, 70)
 	area.add_child(_messages)
 
@@ -148,7 +160,7 @@ func _build_world_area() -> Control:
 	_banner.add_theme_color_override("font_outline_color", Color.BLACK)
 	_banner.add_theme_constant_override("outline_size", 4)
 	_banner.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	_banner.position = Vector2(-100, 110)
+	_banner.position = Vector2(-100, 140)
 	_banner.size = Vector2(200, 28)
 	area.add_child(_banner)
 	return area
@@ -232,6 +244,10 @@ func _build_player_hp() -> Control:
 	_player_winded.offset_right = 90
 	_player_winded.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bar.add_child(_player_winded)
+	_player_focus = FocusPips.new()
+	_player_focus.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	_player_focus.position = Vector2(-44, -4)
+	bar.add_child(_player_focus)
 	return bar
 
 
@@ -338,6 +354,14 @@ func set_winded(mine: int, enemy: int) -> void:
 	_enemy_winded.text = " WINDED %d" % enemy
 
 
+## Focus pips for both sides; both are public knowledge. Call before show_actions.
+func set_focus(mine: int, enemy: int) -> void:
+	_my_focus = mine
+	_foe_focus = enemy
+	_player_focus.value = mine
+	_enemy_focus.value = enemy
+
+
 func set_hp(mine: int, enemy: int) -> void:
 	_player_hp_label.text = "%d/%d" % [maxi(0, mine), DuelRules.MAX_HP]
 	_enemy_hp_label.text = "%d/%d" % [maxi(0, enemy), DuelRules.MAX_HP]
@@ -436,7 +460,8 @@ func _rebuild_slots() -> void:
 		b.text = _short_label(a)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.focus_mode = Control.FOCUS_NONE
-		b.disabled = _locked
+		var cost := DuelRules.focus_cost(a.type) if _in_conflict else 0
+		b.disabled = _locked or cost > _my_focus
 		b.clip_text = true
 		var tint := Color.WHITE
 		match a.type:
@@ -446,6 +471,15 @@ func _rebuild_slots() -> void:
 			T.PURSUE: tint = Color(0.85, 0.55, 1.0)
 		b.add_theme_color_override("font_color", tint)
 		b.pressed.connect(func(): action_chosen.emit(a))
+		if cost != 0:
+			# Focus cost in the corner: -2 spends two pips, +1 gives one back.
+			var tag := _label("%+d" % -cost, 14, FOCUS_COLOR)
+			tag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+			tag.position = Vector2(-16, -3)
+			tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			if b.disabled:
+				tag.modulate.a = 0.4
+			b.add_child(tag)
 		_slots[_slot_of(a.type)].add_child(b)
 
 	# Keep the 3x3 layout stable: empty slots get an invisible spacer.
@@ -460,6 +494,12 @@ func _rebuild_slots() -> void:
 	var combat := _tab == PlayerAction.Group.COMBAT
 	if _staggered:
 		_status.text = "Off balance! You lose this turn."
+	elif combat and _in_conflict and _foe_focus == 0:
+		_status.text = "Enemy has NO FOCUS - it can only GUARD. SHOVE it!"
+	elif combat and _in_conflict and _foe_focus < DuelRules.focus_cost(T.ATTACK):
+		_status.text = "Enemy is low on FOCUS - it can't ATTACK this turn."
+	elif combat and _in_conflict and _my_focus < DuelRules.focus_cost(T.ATTACK):
+		_status.text = "Low FOCUS: you can't ATTACK. GUARD to recover (+1)."
 	elif combat and _in_conflict and _my_winded > 0:
 		_status.text = "WINDED: you can't flee for %d more turn(s). Stand and fight!" % _my_winded
 	elif combat and _in_conflict:

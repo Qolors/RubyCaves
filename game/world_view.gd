@@ -40,6 +40,9 @@ var _vanished := false
 var _puff_tex := TextureFactory.puff()
 var _time := 0.0
 var _enemy_dead := false
+## Doorway mist: [{"a": MapCell, "b": MapCell, "mats": [ShaderMaterial, ...]}], one per open edge.
+var _mist: Array = []
+var _mist_shader: Shader = preload("res://game/shadow_mist.gdshader")
 
 
 func _ready() -> void:
@@ -137,6 +140,62 @@ func build_map(map: DuelMap) -> void:
 		mi.mesh = pair[0].commit()
 		mi.material_override = _material(pair[1])
 		add_child(mi)
+	_build_mist(map)
+
+
+## A curtain of shadow in every doorway. Only doorways between two cells you can see are clear, so
+## every side passage visibly swallows the view: if it's misty, you can't see in, and they can't see out.
+func _build_mist(map: DuelMap) -> void:
+	var quad := QuadMesh.new()
+	quad.size = Vector2(CELL_SIZE, WALL_HEIGHT)
+	var seen := {}
+	for cell in map.cells:
+		for dir in 4:
+			var other := cell.neighbor(dir)
+			if other == null:
+				continue
+			var key := [cell.get_instance_id(), other.get_instance_id()]
+			key.sort()
+			if seen.has(key):
+				continue
+			seen[key] = true
+			var n := dir_vec(dir)
+			var door := cell_center(cell) + n * CELL_SIZE / 2.0 + Vector3.UP * WALL_HEIGHT / 2.0
+			var entry := {"a": cell, "b": other, "mats": []}
+			# Two layers a hand apart give the mist a little depth as you walk up to it.
+			for layer in [-1, 1]:
+				var mat := ShaderMaterial.new()
+				mat.shader = _mist_shader
+				mat.set_shader_parameter("seed", randf() * 10.0)
+				var mi := MeshInstance3D.new()
+				mi.mesh = quad
+				mi.material_override = mat
+				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				mi.position = door + n * 0.09 * layer
+				mi.rotation.y = yaw_of(dir)
+				add_child(mi)
+				entry["mats"].append(mat)
+			_mist.append(entry)
+
+
+## Cells the local player can currently see: their own cell plus the straight sight line.
+static func visible_cells(s: DuelState, local_id: int) -> Dictionary:
+	var me := s.fighters[local_id]
+	var out := {me.cell: true}
+	for c in DuelMap.sight_line(me.cell, me.facing):
+		out[c] = true
+	return out
+
+
+## Fades doorway mist in or out to match what the player can see. 0 seconds snaps.
+func set_sight(visible: Dictionary, seconds := 0.0) -> void:
+	for entry in _mist:
+		var target := 0.0 if visible.has(entry["a"]) and visible.has(entry["b"]) else 1.0
+		for mat in entry["mats"]:
+			if seconds <= 0.0:
+				mat.set_shader_parameter("strength", target)
+			else:
+				create_tween().tween_property(mat, "shader_parameter/strength", target, seconds)
 
 
 static func _material(tex: Texture2D) -> StandardMaterial3D:

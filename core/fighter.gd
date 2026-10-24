@@ -9,6 +9,8 @@ var hp := DuelRules.MAX_HP
 var staggered := false
 ## Last turn number on which this fighter is still winded (can't flee).
 var winded_until := -1
+## Conflict stamina (see DuelRules.focus_cost). Public knowledge, like HP.
+var focus := DuelRules.MAX_FOCUS
 
 
 func _init(p_id: int, p_cell: MapCell, p_facing: int) -> void:

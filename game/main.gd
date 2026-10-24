@@ -53,6 +53,7 @@ func _start_match() -> void:
 	_world.revive()
 	var poses := WorldView.poses_for(_state, LOCAL)
 	_world.snap_to(poses["cam"], poses["enemy"], _state.fighters[BOT].facing)
+	_world.set_sight(WorldView.visible_cells(_state, LOCAL))
 	_world.set_enemy_visible(_enemy_in_sight())
 	_enemy_was_visible = false
 	_hud.log_message("Find the enemy. Strike from behind!")
@@ -81,7 +82,8 @@ func _begin_planning() -> void:
 	var staggered := _state.fighters[LOCAL].staggered
 	_world.enemy_engaged = _state.in_conflict
 	_hud.set_winded(_state.winded_turns_left(LOCAL), _state.winded_turns_left(BOT))
-	_hud.show_actions(_state.get_available_actions(LOCAL), _state.in_conflict, _state.can_ambush(LOCAL), staggered)
+	_hud.set_focus(_state.fighters[LOCAL].focus, _state.fighters[BOT].focus)
+	_hud.show_actions(_state.get_available_actions(LOCAL, true), _state.in_conflict, _state.can_ambush(LOCAL), staggered)
 	_hud.set_timer(_time_left)
 
 	# A staggered player has no choice to make; don't sit on the clock.
@@ -120,6 +122,7 @@ func _resolve(local: PlayerAction) -> void:
 	var was_in_conflict := _state.in_conflict
 	var result := _state.resolve(local, _bot_action)
 	var after := WorldView.poses_for(_state, LOCAL)
+	_world.set_sight(WorldView.visible_cells(_state, LOCAL), WorldView.STEP_DURATION)
 	_world.set_enemy_visible(seen_before or _enemy_in_sight())
 	_world.enemy_engaged = was_in_conflict or _state.in_conflict
 	_bot.observe(result)
