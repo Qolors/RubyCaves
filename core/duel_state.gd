@@ -31,10 +31,16 @@ var rng := RandomNumberGenerator.new()
 var _no_ambush_turn := -1
 
 
-func _init(p_map: DuelMap) -> void:
+## spawn_round picks the spawn layout: it cycles through the map's spawn pairs, and every
+## other cycle the two players trade sides.
+func _init(p_map: DuelMap, spawn_round := 0) -> void:
 	map = p_map
+	var n := map.spawn_pairs.size()
+	var pair: Array = map.spawn_pairs[spawn_round % n]
+	var swap := (spawn_round / n) % 2
 	for i in 2:
-		fighters.append(Fighter.new(i, map.spawns[i]["cell"], map.spawns[i]["facing"]))
+		var sp: Dictionary = pair[i ^ swap]
+		fighters.append(Fighter.new(i, sp["cell"], sp["facing"]))
 
 
 func other(id: int) -> Fighter:
@@ -117,21 +123,21 @@ func _all_actions(id: int) -> Array[PlayerAction]:
 		if c.is_open(bk):
 			list.append(PlayerAction.new(T.RETREAT_BACK))
 		if c.is_open(l):
-			_add_turning_move(list, T.RETREAT_LEFT, c, l)
+			_add_turning_move(list, T.RETREAT_LEFT, c, l, false)
 		if c.is_open(r):
-			_add_turning_move(list, T.RETREAT_RIGHT, c, r)
+			_add_turning_move(list, T.RETREAT_RIGHT, c, r, false)
 		var origin := _dash_origin(f)
 		if origin.is_open(fw):
-			_add_turning_move(list, T.RETREAT_THROUGH, origin, fw)
+			_add_turning_move(list, T.RETREAT_THROUGH, origin, fw, false)
 		return list
 
 	list.append(PlayerAction.wait())
 	if c.is_open(fw):
-		_add_turning_move(list, T.MOVE_FORWARD, c, fw)
+		_add_turning_move(list, T.MOVE_FORWARD, c, fw, true)
 	if c.is_open(l):
-		_add_turning_move(list, T.MOVE_LEFT, c, l)
+		_add_turning_move(list, T.MOVE_LEFT, c, l, true)
 	if c.is_open(r):
-		_add_turning_move(list, T.MOVE_RIGHT, c, r)
+		_add_turning_move(list, T.MOVE_RIGHT, c, r, true)
 	if c.is_open(bk):
 		list.append(PlayerAction.new(T.STEP_BACK))
 	if c.is_open(l):
@@ -145,24 +151,40 @@ func _all_actions(id: int) -> Array[PlayerAction]:
 	return list
 
 
-## Adds the move, split into two veer variants when it would land facing a wall at a T.
-static func _add_turning_move(list: Array[PlayerAction], type: int, from: MapCell, move_dir: int) -> void:
-	if needs_veer(from, move_dir):
-		list.append(PlayerAction.new(type, PlayerAction.Veer.LEFT))
-		list.append(PlayerAction.new(type, PlayerAction.Veer.RIGHT))
-	else:
-		list.append(PlayerAction.new(type))
+## Adds the move once per way it can land (see landing_veers).
+static func _add_turning_move(list: Array[PlayerAction], type: int, from: MapCell, move_dir: int, hooks: bool) -> void:
+	for v in landing_veers(from.neighbor(move_dir), move_dir, hooks):
+		list.append(PlayerAction.new(type, v))
 
 
-static func needs_veer(from: MapCell, move_dir: int) -> bool:
-	var to := from.neighbor(move_dir)
-	return to != null and not to.is_open(move_dir) \
-		and to.is_open(Dirs.left(move_dir)) and to.is_open(Dirs.right(move_dir))
+## The ways a move into `to` can land, left to right. At a T (wall ahead, both sides open) you
+## must pick a side. With hooks (plain walking) you may also arrive at a junction and turn
+## straight down a side passage: straight, hook left or hook right, whichever are open.
+static func landing_veers(to: MapCell, move_dir: int, hooks: bool) -> Array[int]:
+	var lo := to.is_open(Dirs.left(move_dir))
+	var ro := to.is_open(Dirs.right(move_dir))
+	var veers: Array[int] = []
+	if not to.is_open(move_dir):
+		if lo and ro:
+			veers.assign([PlayerAction.Veer.LEFT, PlayerAction.Veer.RIGHT])
+		else:
+			veers.append(PlayerAction.Veer.NONE)  # a corner rounds itself
+		return veers
+	if hooks and lo:
+		veers.append(PlayerAction.Veer.LEFT)
+	veers.append(PlayerAction.Veer.NONE)
+	if hooks and ro:
+		veers.append(PlayerAction.Veer.RIGHT)
+	return veers
 
 
 ## Facing after stepping into a cell. Rounds corners automatically so the player never ends up
-## staring at a wall; at a T-junction the veer picks the side.
+## staring at a wall; at a junction the veer picks the side (a T, or a hook into a side passage).
 static func landing_facing(to: MapCell, move_dir: int, veer: int) -> int:
+	if veer == PlayerAction.Veer.LEFT and to.is_open(Dirs.left(move_dir)):
+		return Dirs.left(move_dir)
+	if veer == PlayerAction.Veer.RIGHT and to.is_open(Dirs.right(move_dir)):
+		return Dirs.right(move_dir)
 	if to.is_open(move_dir):
 		return move_dir
 	var lo := to.is_open(Dirs.left(move_dir))

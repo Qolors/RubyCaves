@@ -4,8 +4,10 @@ extends RefCounted
 
 var map_name := ""
 var cells: Array[MapCell] = []
-## [{cell, facing}, {cell, facing}] for player 1 and 2.
+## [{cell, facing}, {cell, facing}] for player 1 and 2 (the first spawn pair).
 var spawns: Array = [{}, {}]
+## Every spawn pair the map offers; the two spawns of a pair sit on opposite sides of the map.
+var spawn_pairs: Array = []
 var _by_id := {}
 
 
@@ -56,14 +58,23 @@ static func from_json(text: String) -> DuelMap:
 		a.link(d, b)
 		b.link(Dirs.opposite(d), a)
 
-	for i in 2:
-		var key := "player%d" % (i + 1)
-		var cell := map.get_cell(dto["spawn_points"][key])
-		var facing := Dirs.parse(dto["spawn_facing"][key])
-		if not cell.is_open(facing):
-			facing = first_open(cell, facing)
-		map.spawns[i] = {"cell": cell, "facing": facing}
+	if dto.has("spawn_pairs"):
+		for pair in dto["spawn_pairs"]:
+			map.spawn_pairs.append([map._spawn(pair[0]["cell"], pair[0]["facing"]), map._spawn(pair[1]["cell"], pair[1]["facing"])])
+	else:
+		map.spawn_pairs.append([
+			map._spawn(dto["spawn_points"]["player1"], dto["spawn_facing"]["player1"]),
+			map._spawn(dto["spawn_points"]["player2"], dto["spawn_facing"]["player2"])])
+	map.spawns = map.spawn_pairs[0]
 	return map
+
+
+func _spawn(cell_id: String, facing_name: String) -> Dictionary:
+	var cell := get_cell(cell_id)
+	var facing := Dirs.parse(facing_name)
+	if not cell.is_open(facing):
+		facing = first_open(cell, facing)
+	return {"cell": cell, "facing": facing}
 
 
 ## First open direction, trying the given one, then right, left, back.

@@ -74,6 +74,17 @@ func run_rules() -> void:
 	var m := DuelMap.from_json(json)
 	check(m.cells.size() == 14 and m.get_cell("Bottom_N") == m.get_cell("Top_SW"), "14 cells, merged alias")
 	check(m.spawns[0]["cell"].id == "Top_NW" and m.spawns[0]["facing"] == Dirs.SOUTH, "spawn p1")
+	check(m.spawn_pairs.size() == 4, "4 spawn pairs")
+	var seen_cells := {}
+	for round in 8:
+		var sp := DuelState.new(m, round)
+		var a0 := sp.fighters[0].cell
+		var a1 := sp.fighters[1].cell
+		# Opposite sides: the map is point-symmetric under (c, r) -> (3 - c, 4 - r).
+		check(a0.col + a1.col == 3 and a0.row + a1.row == 4 and sp.fighters[0].facing == Dirs.opposite(sp.fighters[1].facing), "spawn round %d: %s vs %s, mirrored" % [round, a0.id, a1.id])
+		check(sp.fighters.all(func(f): return f.cell.is_open(f.facing)), "  spawns face an open way")
+		seen_cells[a0.id] = true
+	check(seen_cells.size() == 8, "over 8 rounds p1 starts in all 8 spawn cells (sides swap)")
 	for c in m.cells:
 		check(c.open_count() >= 2, "%s has >=2 openings (%d)" % [c.id, c.open_count()])
 
@@ -87,6 +98,18 @@ func run_rules() -> void:
 	check(not acts.any(func(a): return a.type in [T.TURN_LEFT, T.TURN_RIGHT, T.MOVE_LEFT]), "corridor has no side options")
 	s.resolve(A(T.MOVE_FORWARD, V.RIGHT), W())
 	check(s.fighters[0].cell.id == "Top_SW" and s.fighters[0].facing == Dirs.WEST, "veer right from south faces West")
+
+	# Hooks: walking into a junction you can keep straight or turn down a side passage on arrival.
+	s = make("Bottom_NW", Dirs.EAST, "Bottom_SE", Dirs.NORTH)
+	var fwd := s.get_available_actions(0).filter(func(o): return o.type == T.MOVE_FORWARD)
+	check(fwd.size() == 2 and has_action(fwd, A(T.MOVE_FORWARD)) and has_action(fwd, A(T.MOVE_FORWARD, V.LEFT)), "Bottom_NW -> Top_SW: straight or hook left (north hall)")
+	s.resolve(A(T.MOVE_FORWARD, V.LEFT), W())
+	check(s.fighters[0].cell.id == "Top_SW" and s.fighters[0].facing == Dirs.NORTH, "  hook left lands facing up the hall")
+	s = make("Top_S", Dirs.WEST, "Bottom_SE", Dirs.NORTH)
+	fwd = s.get_available_actions(0).filter(func(o): return o.type == T.MOVE_FORWARD)
+	check(fwd.size() == 2 and has_action(fwd, A(T.MOVE_FORWARD)) and has_action(fwd, A(T.MOVE_FORWARD, V.RIGHT)), "Top_S -> Top_SW: straight or hook right")
+	s.resolve(A(T.MOVE_FORWARD), W())
+	check(s.fighters[0].facing == Dirs.WEST, "  straight keeps facing straight")
 
 	s = make("Top_W", Dirs.SOUTH, "Top_SW", Dirs.EAST)
 	check(s.can_ambush(0), "ambush on side")
@@ -305,7 +328,7 @@ func run_soak() -> void:
 	var wall_stare := 0
 	var map := DuelMap.from_json(json)
 	for g in games:
-		var st := DuelState.new(map)
+		var st := DuelState.new(map, g)
 		st.rng.seed = g
 		var b0 := BotBrain.new(0, g)
 		var b1 := BotBrain.new(1, g + 99999)

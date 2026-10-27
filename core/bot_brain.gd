@@ -191,11 +191,15 @@ func _wander(options: Array[PlayerAction]) -> PlayerAction:
 	return weighted[-1][0]
 
 
-## Picks an action of the given type, choosing a random veer when there are two variants.
+## Picks an action of the given type. With several veers it mostly keeps straight, otherwise a
+## random one (a T-junction side, or a hook into a side passage).
 func _pick(options: Array[PlayerAction], type: int) -> PlayerAction:
 	var matches := options.filter(func(o: PlayerAction): return o.type == type)
 	if matches.is_empty():
 		return null
+	for m in matches:
+		if m.veer == PlayerAction.Veer.NONE and matches.size() > 1 and _rng.randf() < 0.6:
+			return m
 	return matches[_rng.randi_range(0, matches.size() - 1)]
 
 

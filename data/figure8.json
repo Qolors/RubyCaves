@@ -41,5 +41,11 @@
   "spawn_facing": {
     "player1": "South",
     "player2": "North"
-  }
+  },
+  "spawn_pairs": [
+    [{"cell": "Top_NW", "facing": "South"}, {"cell": "Bottom_SE", "facing": "North"}],
+    [{"cell": "Top_NE", "facing": "West"},  {"cell": "Bottom_SW", "facing": "East"}],
+    [{"cell": "Top_E",  "facing": "South"}, {"cell": "Bottom_W",  "facing": "North"}],
+    [{"cell": "Top_N",  "facing": "West"},  {"cell": "Bottom_S",  "facing": "East"}]
+  ]
 }

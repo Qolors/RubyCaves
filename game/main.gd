@@ -23,6 +23,8 @@ var _phase := Phase.PLANNING
 var _time_left := 0.0
 var _bot_action: PlayerAction
 var _enemy_was_visible := false
+## Spawn layout for the next match (see DuelState._init); advances every match so spawns rotate.
+var _spawn_round := randi() % 8
 
 
 func _ready() -> void:
@@ -44,7 +46,9 @@ func _ready() -> void:
 
 
 func _start_match() -> void:
-	_state = DuelState.new(_map)
+	var forced := _dev.spawn_override()
+	_state = DuelState.new(_map, forced if forced >= 0 else _spawn_round)
+	_spawn_round += 1
 	_bot = BotBrain.new(BOT)
 	_dev.apply_bot_override(_state)
 	_hud.mini_map.state = _state
@@ -121,6 +125,7 @@ func _resolve(local: PlayerAction) -> void:
 	var before := WorldView.poses_for(_state, LOCAL)
 	var seen_before := _enemy_in_sight()
 	var was_in_conflict := _state.in_conflict
+	var before_turn := CombatReport.snapshot(_state)
 	var result := _state.resolve(local, _bot_action)
 	var after := WorldView.poses_for(_state, LOCAL)
 	_world.set_sight(WorldView.visible_cells(_state, LOCAL), WorldView.STEP_DURATION)
@@ -173,17 +178,13 @@ func _resolve(local: PlayerAction) -> void:
 		result.has(K.BUMPED, LOCAL), enemy_lunges, func():
 			if enemy_fled:
 				_world.snap_enemy(after["enemy"])
-			_after_resolve(result))
+			_after_resolve(result, before_turn))
 
 
-func _after_resolve(result: TurnResult) -> void:
-	var caught := result.has(K.CAUGHT)
-	for e in result.events:
-		if caught and e.kind == K.RETREATED:
-			continue  # no vanish line when chased down
-		var msg := _describe(e)
-		if msg != "":
-			_hud.log_message(msg)
+func _after_resolve(result: TurnResult, before_turn: Dictionary) -> void:
+	var report := CombatReport.build(result, before_turn, _state, LOCAL)
+	if report != null:
+		_hud.show_report(report, _state.in_conflict)
 
 	if not _state.is_over:
 		_begin_planning()
@@ -206,34 +207,6 @@ func _after_resolve(result: TurnResult) -> void:
 	var total := maxi(0, _load_rubies() + delta)
 	_save_rubies(total)
 	_hud.show_game_over(title, color, "%s%d RUBIES\nTotal: %d rubies\n\nTurns: %d" % ["+" if delta > 0 else "", delta, total, result.turn])
-
-
-static func _describe(e: TurnEvent) -> String:
-	var mine := e.actor == LOCAL
-	match e.kind:
-		K.AMBUSHED: return "You AMBUSH the enemy! -%d" % e.amount if mine else "AMBUSHED from behind! -%d" % e.amount
-		K.ATTACKED: return "You hit the enemy. -%d" % e.amount if mine else "The enemy hits you. -%d" % e.amount
-		K.ATTACK_DODGED: return "Your swing hits air - it retreated." if mine else "You slip away from its swing."
-		K.CLASHED: return "CLASH! Blades meet - no damage."
-		K.BLOCKED: return "You GUARD the blow! It loses footing." if mine else "It guards your swing! You lose footing."
-		K.PUNISHED: return "Its telegraphed swing glances off. -%d" % e.amount if mine else "Your telegraphed swing is punished! -%d" % e.amount
-		K.GUARD_SHATTERED: return "You SHATTER its tired guard! -%d" % e.amount if mine else "Your tired guard SHATTERS! -%d" % e.amount
-		K.GUARD_BROKEN: return "You shove through its guard! -%d" % e.amount if mine else "It shoves through your guard! -%d" % e.amount
-		K.SHOVED: return "You shove it. -%d" % e.amount if mine else "It shoves you. -%d" % e.amount
-		K.SHOVED_AWAY: return "You shove it out of the room!" if mine else "You're shoved out of the room!"
-		K.PINNED: return "You slam it into the wall!" if mine else "You're slammed into the wall!"
-		K.REPOSITIONED: return "You turn the fight around." if mine else "It turns the fight around."
-		K.INITIATIVE:
-			if e.actor < 0:
-				return "Stalemate - nobody holds the initiative."
-			return "You seize the INITIATIVE." if mine else "The enemy seizes the INITIATIVE."
-		K.SHOVES_CANCELLED: return "You push off each other."
-		K.STAGGERED: return "You are STAGGERED!" if mine else "The enemy is STAGGERED!"
-		K.BUMPED: return "You collide in the hallway!" if mine else ""
-		K.CAUGHT: return "You cut it down as it runs! -%d" % e.amount if mine else "It catches you as you run! -%d" % e.amount
-		K.RETREATED: return "You vanish into the shadows." if mine else "The enemy vanishes in a puff of shadow!"
-		K.DIED: return "You have fallen." if mine else "The enemy is slain!"
-	return ""
 
 
 static func _load_rubies() -> int:

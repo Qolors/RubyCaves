@@ -10,6 +10,8 @@ const T := PlayerAction.Type
 const RED := Color(1.0, 0.2, 0.2)
 const BLUE := Color(0.2, 0.7, 1.0)
 const PANEL_GREY := Color(0.33, 0.33, 0.33)
+## Smallest text size anywhere in the HUD (VT323 runs small; below this it's unreadable on phones).
+const SMALL := 20
 const WINDED_COLOR := Color(1.0, 0.7, 0.3)
 const FOOTING_COLOR := Color(1.0, 0.82, 0.2)
 const INITIATIVE_COLOR := Color(0.55, 1.0, 0.55)
@@ -24,6 +26,13 @@ var _player_hp_label: Label
 var _player_hp_fill: ColorRect
 var _timer_label: Label
 var _messages: Label
+var _report: PanelContainer
+var _report_matchup: Label
+var _report_verdict: Label
+var _report_lines: Label
+## The report stays up through a fight; after one it fades out on its own.
+var _report_sticky := false
+var _report_time := 0.0
 var _banner: Label
 var _status: Label
 var _flash: ColorRect
@@ -125,7 +134,7 @@ func _build_world_area() -> Control:
 	top.add_child(bar[0])
 	var footing_row := HBoxContainer.new()
 	footing_row.add_theme_constant_override("separation", 6)
-	footing_row.add_child(_label("FOOTING", 14, FOOTING_COLOR))
+	footing_row.add_child(_label("FOOTING", SMALL, FOOTING_COLOR))
 	_enemy_footing = FootingPips.new()
 	_enemy_footing.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	footing_row.add_child(_enemy_footing)
@@ -133,50 +142,79 @@ func _build_world_area() -> Control:
 	footing_row.add_child(_enemy_initiative)
 	top.add_child(footing_row)
 
-	_messages = _label("", 14, Color(1.0, 0.85, 0.4))
-	_messages.position = Vector2(12, 66)
-	_messages.size = Vector2(250, 70)
+	_messages = _label("", SMALL, Color(1.0, 0.85, 0.4))
+	_messages.position = Vector2(12, 84)
+	_messages.size = Vector2(300, 70)
 	area.add_child(_messages)
 
-	_timer_label = _label("", 26)
+	_build_report(area)
+
+	_timer_label = _label("", 30)
 	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_timer_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	_timer_label.position = Vector2(-70, 2)
-	_timer_label.size = Vector2(60, 28)
+	_timer_label.size = Vector2(60, 32)
 	area.add_child(_timer_label)
 
 	var map_toggle := Button.new()
 	map_toggle.text = "MAP"
 	map_toggle.toggle_mode = true
 	map_toggle.focus_mode = Control.FOCUS_NONE
-	map_toggle.add_theme_font_size_override("font_size", 14)
+	map_toggle.add_theme_font_size_override("font_size", SMALL)
 	map_toggle.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	map_toggle.position = Vector2(-50, 34)
-	map_toggle.size = Vector2(40, 20)
+	map_toggle.position = Vector2(-54, 38)
+	map_toggle.size = Vector2(44, 26)
 	area.add_child(map_toggle)
 	mini_map = MiniMap.new()
 	mini_map.visible = false
 	mini_map.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	mini_map.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	mini_map.position = Vector2(-90, 60)
+	mini_map.position = Vector2(-90, 70)
 	area.add_child(mini_map)
 	map_toggle.toggled.connect(func(on: bool): mini_map.visible = on)
 
-	_banner = _label("", 24)
+	_banner = _label("", 30)
 	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_banner.visible = false
 	_banner.add_theme_color_override("font_outline_color", Color.BLACK)
 	_banner.add_theme_constant_override("outline_size", 4)
 	_banner.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	_banner.position = Vector2(-100, 140)
-	_banner.size = Vector2(200, 28)
+	_banner.position = Vector2(-120, 150)
+	_banner.size = Vector2(240, 34)
 	area.add_child(_banner)
 	return area
 
 
+## Bottom of the world view: what both sides did last turn, who won and why, what changed.
+func _build_report(area: Control) -> void:
+	_report = PanelContainer.new()
+	_report.visible = false
+	_report.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0, 0, 0, 0.6)
+	style.border_color = Color(1, 1, 1, 0.25)
+	style.border_width_top = 2
+	style.set_content_margin_all(6)
+	_report.add_theme_stylebox_override("panel", style)
+	_report.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_report.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	area.add_child(_report)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 0)
+	_report.add_child(box)
+	_report_matchup = _label("", SMALL, Color(0.75, 0.75, 0.75))
+	_report_verdict = _label("", 24)
+	_report_lines = _label("", SMALL)
+	for l in [_report_matchup, _report_verdict, _report_lines]:
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(l)
+
+
 func _build_action_panel() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(0, 156)
+	panel.custom_minimum_size = Vector2(0, 190)
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL_GREY
 	style.content_margin_left = 8
@@ -193,9 +231,9 @@ func _build_action_panel() -> Control:
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.add_theme_constant_override("separation", 4)
 	row.add_child(left)
-	_status = _label("", 14, Color(0.85, 0.85, 0.85))
+	_status = _label("", SMALL, Color(0.9, 0.9, 0.9))
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status.custom_minimum_size = Vector2(0, 28)
+	_status.custom_minimum_size = Vector2(0, 40)
 	left.add_child(_status)
 
 	var grid := GridContainer.new()
@@ -207,7 +245,7 @@ func _build_action_panel() -> Control:
 	for i in 9:
 		var slot := HBoxContainer.new()
 		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slot.custom_minimum_size = Vector2(0, 30)
+		slot.custom_minimum_size = Vector2(0, 38)
 		slot.add_theme_constant_override("separation", 2)
 		grid.add_child(slot)
 		_slots.append(slot)
@@ -231,7 +269,7 @@ func _build_action_panel() -> Control:
 
 func _build_player_hp() -> Control:
 	var bar := Control.new()
-	bar.custom_minimum_size = Vector2(0, 22)
+	bar.custom_minimum_size = Vector2(0, 26)
 	var bg := ColorRect.new()
 	bg.color = Color(0.25, 0.05, 0.05)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -240,7 +278,7 @@ func _build_player_hp() -> Control:
 	_player_hp_fill.color = RED
 	_player_hp_fill.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
 	bar.add_child(_player_hp_fill)
-	_player_hp_label = _label("10/10", 22, Color.BLACK)
+	_player_hp_label = _label("10/10", 26, Color.BLACK)
 	_player_hp_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0))
 	_player_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_player_hp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -258,7 +296,7 @@ func _build_player_hp() -> Control:
 	bar.add_child(_player_footing)
 	_player_initiative = _initiative_tag()
 	_player_initiative.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
-	_player_initiative.offset_left = -96
+	_player_initiative.offset_left = -100
 	_player_initiative.offset_right = -50
 	_player_initiative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bar.add_child(_player_initiative)
@@ -320,13 +358,13 @@ static func _bar(width: float, height: float) -> Array:
 
 
 static func _winded_tag() -> Label:
-	var tag := _label("", 14, WINDED_COLOR)
+	var tag := _label("", SMALL, WINDED_COLOR)
 	tag.visible = false
 	return tag
 
 
 static func _initiative_tag() -> Label:
-	var tag := _label("INIT", 14, INITIATIVE_COLOR)
+	var tag := _label("INIT", SMALL, INITIATIVE_COLOR)
 	tag.visible = false
 	return tag
 
@@ -339,7 +377,7 @@ static func _build_theme() -> Theme:
 	font.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
 	var t := Theme.new()
 	t.default_font = font
-	t.default_font_size = 18
+	t.default_font_size = 24
 
 	var box := func(bg: Color, border: Color) -> StyleBoxFlat:
 		var sb := StyleBoxFlat.new()
@@ -409,6 +447,19 @@ func set_timer(seconds: float) -> void:
 
 func log_message(text: String) -> void:
 	_log.append([text, _clock])
+
+
+## Shows a turn's combat report. sticky: keep it up (still fighting) instead of fading it out.
+func show_report(report: CombatReport, sticky: bool) -> void:
+	_report_matchup.text = report.matchup
+	_report_verdict.text = report.verdict
+	_report_verdict.add_theme_color_override("font_color", report.color)
+	_report_lines.text = "\n".join(report.lines)
+	_report_lines.visible = not report.lines.is_empty()
+	_report.modulate.a = 1.0
+	_report.visible = true
+	_report_sticky = sticky
+	_report_time = _clock
 
 
 func flash_screen(color: Color, alpha: float) -> void:
@@ -487,7 +538,8 @@ func _rebuild_slots() -> void:
 	var visible_actions := _actions.filter(func(a: PlayerAction): return a.group() == _tab)
 	for a in visible_actions:
 		var b := Button.new()
-		b.text = _short_label(a)
+		var siblings := _actions.filter(func(o: PlayerAction): return o.type == a.type).size()
+		b.text = _short_label(a, siblings)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.focus_mode = Control.FOCUS_NONE
 		var cost := DuelRules.footing_cost(a.type) if _in_conflict else 0
@@ -504,9 +556,9 @@ func _rebuild_slots() -> void:
 		b.pressed.connect(func(): action_chosen.emit(a))
 		if cost != 0:
 			# Footing cost in the corner: -1 spends a pip, +1 gives one back.
-			var tag := _label("%+d" % -cost, 14, FOOTING_COLOR)
+			var tag := _label("%+d" % -cost, 18, FOOTING_COLOR)
 			tag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-			tag.position = Vector2(-16, -3)
+			tag.position = Vector2(-18, -5)
 			tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			if b.disabled:
 				tag.modulate.a = 0.4
@@ -546,7 +598,7 @@ func _rebuild_slots() -> void:
 	elif _actions.any(func(a: PlayerAction): return a.type == T.AMBUSH):
 		_status.text = "Enemy exposed! Tap the SWORD tab to AMBUSH."
 	elif visible_actions.any(func(a: PlayerAction): return a.veer != PlayerAction.Veer.NONE):
-		_status.text = "Junction ahead: choose which way to round it (L/R)."
+		_status.text = "Junction: go straight, or step in and hook L/R down the side passage."
 	else:
 		_status.text = "Choose your move."
 
@@ -567,7 +619,8 @@ static func _slot_of(a: PlayerAction) -> int:
 
 
 ## Button text. Plain ASCII arrows so it renders with the bundled pixel font everywhere.
-static func _short_label(a: PlayerAction) -> String:
+## siblings: how many variants of this move share the slot (straight / hook L / hook R).
+static func _short_label(a: PlayerAction, siblings := 1) -> String:
 	var label := ""
 	match a.type:
 		T.TURN_LEFT: label = "TURN L"
@@ -586,17 +639,22 @@ static func _short_label(a: PlayerAction) -> String:
 		T.RETREAT_BACK: label = "v BACK"
 		T.RETREAT_RIGHT: label = "FLEE >"
 		T.RETREAT_THROUGH: label = "^ DASH"
-	if a.veer == PlayerAction.Veer.NONE:
-		return label
 	if a.type == T.GUARD:
-		return "< GUARD" if a.veer == PlayerAction.Veer.LEFT else "GUARD >"
-	# Two half-width buttons share the slot: arrow of the move plus which way to round the T.
+		match a.veer:
+			PlayerAction.Veer.LEFT: return "< GUARD"
+			PlayerAction.Veer.RIGHT: return "GUARD >"
+		return label
 	var arrow := ">"
 	if a.type in [T.MOVE_FORWARD, T.RETREAT_THROUGH]:
 		arrow = "^"
 	elif a.type in [T.MOVE_LEFT, T.RETREAT_LEFT]:
 		arrow = "<"
-	return "%s %s" % [arrow, "L" if a.veer == PlayerAction.Veer.LEFT else "R"]
+	elif a.type in [T.STEP_BACK, T.RETREAT_BACK]:
+		arrow = "v"
+	if a.veer == PlayerAction.Veer.NONE:
+		return arrow if siblings > 1 else label
+	# Variants share the slot: arrow of the move plus which way to turn on arrival.
+	return "%s%s" % [arrow, "L" if a.veer == PlayerAction.Veer.LEFT else "R"]
 
 
 func _process(delta: float) -> void:
@@ -605,3 +663,8 @@ func _process(delta: float) -> void:
 	while _log.size() > 4:
 		_log.pop_front()
 	_messages.text = "\n".join(_log.map(func(l): return l[0]))
+	# A finished fight's report lingers for a few seconds, then fades.
+	if _report.visible and not _report_sticky:
+		var age := _clock - _report_time
+		_report.modulate.a = clampf(7.0 - age, 0.0, 1.0)
+		_report.visible = age < 7.0

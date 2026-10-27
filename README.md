@@ -8,7 +8,7 @@ This is a port of the C# prototype in `../RubyCaves`. The rules, bot and visuals
 - **Rules test + bot sims:**
   `Godot_v4.7.2-stable_win64_console.exe --headless --path . --script res://tests/rules_test.gd`
   Add `-- --quick` to skip the 3000-game soak and the flee-spam / Footing A/B sims.
-- **Dev flags** (after `--`): `--bot=Top_SW:East[:idle]`, `--botplay=Wait,RetreatThrough`, `--play=MoveForward,Ambush,Attack`, `--shot=C:/path/shot.png`, `--shotmid=0.2`
+- **Dev flags** (after `--`): `--spawn=0` (fix the spawn round), `--bot=Top_SW:East[:idle]`, `--botplay=Wait,RetreatThrough`, `--play=MoveForward,Ambush,Attack`, `--shot=C:/path/shot.png`, `--shotmid=0.2`
 
 ## Web export
 Web export templates for 4.7.2 must be installed (Editor → Manage Export Templates).
@@ -45,7 +45,9 @@ Any of these can sit behind your own `.io` domain.
 
 ## Rules (prototype)
 - Each turn lasts 10s. Both players lock in one action, then the actions play out at the same time.
-- Moving into a corner rounds it for you automatically. At a T-junction, the forward button splits into `^ L` and `^ R`.
+- Players spawn on opposite sides of the map. The spawn pair rotates every match, and every other cycle the sides swap.
+- Moving into a corner rounds it for you automatically. At a T-junction, the move splits into `^L` and `^R`. Walking into a junction with a side passage also offers a hook (`^L` / `^` / `^R`): you step in and turn down that passage in the same move.
+- After every fight turn, a report at the bottom of the view shows both picks, who won and why, and what changed (damage, Footing, initiative, stuns, free moves, a wall at someone's back).
 - You can only see straight ahead.
 - **Ambush**: you are 1 tile from the enemy and looking at its back or side. The enemy takes 4 damage, its action is cancelled, and a conflict starts.
 - **Conflict**: Attack beats Shove, Shove beats Guard, Guard beats Attack. Fleeing (back, left, right or dash past) dodges Guard and Shove, but an **Attack catches a flee**: the attacker follows, hits, and the fight goes on. Any flee leaves you **winded** (no fleeing) for 3 turns. A fleer vanishes in shadow, so the direction is hidden.

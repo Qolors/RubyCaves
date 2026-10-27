@@ -5,6 +5,7 @@ extends RefCounted
 ##   --shot=C:/path/shot.png           saves a screenshot once the script finishes, then quits
 ##   --shotmid=0.3                     ...or captures that many seconds into the last action instead
 ##   --bot=Top_SW:East[:idle]          places the bot (optionally never acting)
+##   --spawn=0                         fixes the spawn round (otherwise spawns rotate per match)
 ##   --botplay=Wait,RetreatThrough     scripts the bot's actions (then it thinks for itself)
 ## Action tokens may carry a veer: MoveForward:Left.
 
@@ -25,6 +26,12 @@ static func _parse(token: String) -> PlayerAction:
 	if parts.size() > 1:
 		veer = PlayerAction.Veer.get(parts[1].to_upper(), PlayerAction.Veer.NONE)
 	return PlayerAction.new(PlayerAction.type_from_name(parts[0]), veer)
+
+
+## Spawn round forced by --spawn, or -1.
+func spawn_override() -> int:
+	var v := _arg("spawn")
+	return int(v) if v.is_valid_int() else -1
 
 
 func next_bot_action() -> PlayerAction:
