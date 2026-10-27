@@ -11,7 +11,8 @@ const RED := Color(1.0, 0.2, 0.2)
 const BLUE := Color(0.2, 0.7, 1.0)
 const PANEL_GREY := Color(0.33, 0.33, 0.33)
 const WINDED_COLOR := Color(1.0, 0.7, 0.3)
-const FOCUS_COLOR := Color(1.0, 0.82, 0.2)
+const FOOTING_COLOR := Color(1.0, 0.82, 0.2)
+const INITIATIVE_COLOR := Color(0.55, 1.0, 0.55)
 
 var world_viewport: SubViewport
 var sword: SwordView
@@ -34,16 +35,21 @@ var _game_over_title: Label
 var _game_over_body: Label
 var _enemy_winded: Label
 var _player_winded: Label
-var _enemy_focus: FocusPips
-var _player_focus: FocusPips
+var _enemy_footing: FootingPips
+var _player_footing: FootingPips
+var _enemy_initiative: Label
+var _player_initiative: Label
 
 var _tab := PlayerAction.Group.MOVEMENT
 var _actions: Array[PlayerAction] = []
 var _in_conflict := false
 var _staggered := false
 var _my_winded := 0
-var _my_focus := DuelRules.MAX_FOCUS
-var _foe_focus := DuelRules.MAX_FOCUS
+var _my_footing := DuelRules.MAX_FOOTING
+var _foe_footing := DuelRules.MAX_FOOTING
+var _my_free := false
+var _my_initiative := false
+var _foe_initiative := false
 var _locked := false
 var _log: Array = []  # [text, time]
 var _clock := 0.0
@@ -117,13 +123,15 @@ func _build_world_area() -> Control:
 	var bar := _bar(160, 10)
 	_enemy_hp_fill = bar[1]
 	top.add_child(bar[0])
-	var focus_row := HBoxContainer.new()
-	focus_row.add_theme_constant_override("separation", 6)
-	focus_row.add_child(_label("FOCUS", 14, FOCUS_COLOR))
-	_enemy_focus = FocusPips.new()
-	_enemy_focus.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	focus_row.add_child(_enemy_focus)
-	top.add_child(focus_row)
+	var footing_row := HBoxContainer.new()
+	footing_row.add_theme_constant_override("separation", 6)
+	footing_row.add_child(_label("FOOTING", 14, FOOTING_COLOR))
+	_enemy_footing = FootingPips.new()
+	_enemy_footing.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	footing_row.add_child(_enemy_footing)
+	_enemy_initiative = _initiative_tag()
+	footing_row.add_child(_enemy_initiative)
+	top.add_child(footing_row)
 
 	_messages = _label("", 14, Color(1.0, 0.85, 0.4))
 	_messages.position = Vector2(12, 66)
@@ -244,10 +252,16 @@ func _build_player_hp() -> Control:
 	_player_winded.offset_right = 90
 	_player_winded.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bar.add_child(_player_winded)
-	_player_focus = FocusPips.new()
-	_player_focus.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
-	_player_focus.position = Vector2(-44, -4)
-	bar.add_child(_player_focus)
+	_player_footing = FootingPips.new()
+	_player_footing.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	_player_footing.position = Vector2(-44, -4)
+	bar.add_child(_player_footing)
+	_player_initiative = _initiative_tag()
+	_player_initiative.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
+	_player_initiative.offset_left = -96
+	_player_initiative.offset_right = -50
+	_player_initiative.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	bar.add_child(_player_initiative)
 	return bar
 
 
@@ -311,6 +325,12 @@ static func _winded_tag() -> Label:
 	return tag
 
 
+static func _initiative_tag() -> Label:
+	var tag := _label("INIT", 14, INITIATIVE_COLOR)
+	tag.visible = false
+	return tag
+
+
 static func _build_theme() -> Theme:
 	# Browsers can't see system fonts, so the pixel font ships with the game (VT323, OFL licence).
 	var font: FontFile = load("res://assets/fonts/VT323-Regular.ttf")
@@ -354,12 +374,22 @@ func set_winded(mine: int, enemy: int) -> void:
 	_enemy_winded.text = " WINDED %d" % enemy
 
 
-## Focus pips for both sides; both are public knowledge. Call before show_actions.
-func set_focus(mine: int, enemy: int) -> void:
-	_my_focus = mine
-	_foe_focus = enemy
-	_player_focus.value = mine
-	_enemy_focus.value = enemy
+## Footing pips for both sides; both are public knowledge. my_free: our next conflict action
+## costs nothing (a guard held). Call before show_actions.
+func set_footing(mine: int, enemy: int, my_free: bool) -> void:
+	_my_footing = mine
+	_foe_footing = enemy
+	_my_free = my_free
+	_player_footing.value = mine
+	_enemy_footing.value = enemy
+
+
+## Who holds the initiative (wins Attack vs Attack). Public knowledge. Call before show_actions.
+func set_initiative(mine: bool, enemy: bool) -> void:
+	_my_initiative = mine
+	_foe_initiative = enemy
+	_player_initiative.visible = mine
+	_enemy_initiative.visible = enemy
 
 
 func set_hp(mine: int, enemy: int) -> void:
@@ -460,27 +490,28 @@ func _rebuild_slots() -> void:
 		b.text = _short_label(a)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.focus_mode = Control.FOCUS_NONE
-		var cost := DuelRules.focus_cost(a.type) if _in_conflict else 0
-		b.disabled = _locked or cost > _my_focus
+		var cost := DuelRules.footing_cost(a.type) if _in_conflict else 0
+		if cost > 0 and _my_free:
+			cost = 0
+		b.disabled = _locked or (DuelRules.needs_footing(a.type) and cost > _my_footing)
 		b.clip_text = true
 		var tint := Color.WHITE
 		match a.type:
 			T.AMBUSH, T.ATTACK: tint = Color(1.0, 0.4, 0.4)
 			T.GUARD: tint = Color(0.5, 0.8, 1.0)
 			T.SHOVE: tint = Color(1.0, 0.75, 0.3)
-			T.PURSUE: tint = Color(0.85, 0.55, 1.0)
 		b.add_theme_color_override("font_color", tint)
 		b.pressed.connect(func(): action_chosen.emit(a))
 		if cost != 0:
-			# Focus cost in the corner: -2 spends two pips, +1 gives one back.
-			var tag := _label("%+d" % -cost, 14, FOCUS_COLOR)
+			# Footing cost in the corner: -1 spends a pip, +1 gives one back.
+			var tag := _label("%+d" % -cost, 14, FOOTING_COLOR)
 			tag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 			tag.position = Vector2(-16, -3)
 			tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			if b.disabled:
 				tag.modulate.a = 0.4
 			b.add_child(tag)
-		_slots[_slot_of(a.type)].add_child(b)
+		_slots[_slot_of(a)].add_child(b)
 
 	# Keep the 3x3 layout stable: empty slots get an invisible spacer.
 	for slot in _slots:
@@ -494,16 +525,20 @@ func _rebuild_slots() -> void:
 	var combat := _tab == PlayerAction.Group.COMBAT
 	if _staggered:
 		_status.text = "Off balance! You lose this turn."
-	elif combat and _in_conflict and _foe_focus == 0:
-		_status.text = "Enemy has NO FOCUS - it can only GUARD. SHOVE it!"
-	elif combat and _in_conflict and _foe_focus < DuelRules.focus_cost(T.ATTACK):
-		_status.text = "Enemy is low on FOCUS - it can't ATTACK this turn."
-	elif combat and _in_conflict and _my_focus < DuelRules.focus_cost(T.ATTACK):
-		_status.text = "Low FOCUS: you can't ATTACK. GUARD to recover (+1)."
+	elif combat and _in_conflict and _my_free:
+		_status.text = "Your guard held: your next move is FREE. Set them up!"
+	elif combat and _in_conflict and _foe_footing <= 0:
+		_status.text = "Enemy is EXHAUSTED: its swing is weak and its guard may shatter."
+	elif combat and _in_conflict and _my_footing <= 0:
+		_status.text = "EXHAUSTED: your swing is telegraphed. GUARD to regain footing."
 	elif combat and _in_conflict and _my_winded > 0:
 		_status.text = "WINDED: you can't flee for %d more turn(s). Stand and fight!" % _my_winded
+	elif combat and _in_conflict and _my_initiative:
+		_status.text = "You hold the INITIATIVE: you win a trade of attacks."
+	elif combat and _in_conflict and _foe_initiative:
+		_status.text = "Enemy holds the INITIATIVE: it wins a trade of attacks."
 	elif combat and _in_conflict:
-		_status.text = "ATK>SHOVE>GUARD>ATK. Fleeing dodges all of them, but PURSUE catches a flee."
+		_status.text = "ATK>SHOVE>GUARD>ATK. Fleeing dodges a guard or shove, but not an ATTACK."
 	elif combat and visible_actions.is_empty():
 		_status.text = "No target. Get 1 tile behind or beside the enemy to AMBUSH."
 	elif combat:
@@ -516,15 +551,17 @@ func _rebuild_slots() -> void:
 		_status.text = "Choose your move."
 
 
-static func _slot_of(t: int) -> int:
-	match t:
+static func _slot_of(a: PlayerAction) -> int:
+	if a.type == T.GUARD and a.veer != PlayerAction.Veer.NONE:
+		return 6 if a.veer == PlayerAction.Veer.LEFT else 8  # reposition guards flank the dash
+	match a.type:
 		T.TURN_LEFT, T.GUARD: return 0
 		T.MOVE_FORWARD, T.AMBUSH, T.ATTACK: return 1
 		T.TURN_RIGHT, T.SHOVE: return 2
 		T.MOVE_LEFT, T.RETREAT_LEFT: return 3
 		T.STEP_BACK, T.RETREAT_BACK: return 4
 		T.MOVE_RIGHT, T.RETREAT_RIGHT: return 5
-		T.TURN_AROUND, T.PURSUE: return 6
+		T.TURN_AROUND: return 6
 		T.WAIT, T.RETREAT_THROUGH: return 7
 	return 8
 
@@ -545,13 +582,14 @@ static func _short_label(a: PlayerAction) -> String:
 		T.ATTACK: label = "ATTACK"
 		T.GUARD: label = "GUARD"
 		T.SHOVE: label = "SHOVE"
-		T.PURSUE: label = "PURSUE"
 		T.RETREAT_LEFT: label = "< FLEE"
 		T.RETREAT_BACK: label = "v BACK"
 		T.RETREAT_RIGHT: label = "FLEE >"
 		T.RETREAT_THROUGH: label = "^ DASH"
 	if a.veer == PlayerAction.Veer.NONE:
 		return label
+	if a.type == T.GUARD:
+		return "< GUARD" if a.veer == PlayerAction.Veer.LEFT else "GUARD >"
 	# Two half-width buttons share the slot: arrow of the move plus which way to round the T.
 	var arrow := ">"
 	if a.type in [T.MOVE_FORWARD, T.RETREAT_THROUGH]:

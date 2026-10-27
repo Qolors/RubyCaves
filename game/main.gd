@@ -82,7 +82,8 @@ func _begin_planning() -> void:
 	var staggered := _state.fighters[LOCAL].staggered
 	_world.enemy_engaged = _state.in_conflict
 	_hud.set_winded(_state.winded_turns_left(LOCAL), _state.winded_turns_left(BOT))
-	_hud.set_focus(_state.fighters[LOCAL].focus, _state.fighters[BOT].focus)
+	_hud.set_footing(_state.fighters[LOCAL].footing, _state.fighters[BOT].footing, _state.fighters[LOCAL].free_action)
+	_hud.set_initiative(_state.initiative == LOCAL, _state.initiative == BOT)
 	_hud.show_actions(_state.get_available_actions(LOCAL, true), _state.in_conflict, _state.can_ambush(LOCAL), staggered)
 	_hud.set_timer(_time_left)
 
@@ -132,14 +133,14 @@ func _resolve(local: PlayerAction) -> void:
 	var i_moved := result.has(K.MOVED, LOCAL) or result.has(K.RETREATED, LOCAL) or result.has(K.AMBUSHED, LOCAL)
 	if i_moved:
 		_hud.sword.bob()
-	if mine in [T.ATTACK, T.SHOVE, T.PURSUE]:
+	if mine in [T.ATTACK, T.SHOVE]:
 		_hud.sword.swing(false)
 	if mine == T.AMBUSH:
 		_hud.sword.swing(true)
 	if mine == T.GUARD:
 		_hud.sword.guard()
 
-	var enemy_strikes := theirs in [T.ATTACK, T.SHOVE, T.AMBUSH, T.PURSUE]
+	var enemy_strikes := theirs in [T.ATTACK, T.SHOVE, T.AMBUSH]
 	if enemy_strikes:
 		_world.show_enemy_attack()
 	if theirs == T.GUARD:
@@ -159,7 +160,7 @@ func _resolve(local: PlayerAction) -> void:
 	get_tree().create_timer(0.18).timeout.connect(func():
 		for e in result.events:
 			match e.kind:
-				K.ATTACKED, K.AMBUSHED, K.GUARD_BROKEN, K.SHOVED, K.CAUGHT:
+				K.ATTACKED, K.AMBUSHED, K.GUARD_BROKEN, K.SHOVED, K.CAUGHT, K.GUARD_SHATTERED, K.PUNISHED:
 					if e.target == BOT:
 						_world.flash_enemy()
 					else:
@@ -216,14 +217,22 @@ static func _describe(e: TurnEvent) -> String:
 		K.ATTACKED: return "You hit the enemy. -%d" % e.amount if mine else "The enemy hits you. -%d" % e.amount
 		K.ATTACK_DODGED: return "Your swing hits air - it retreated." if mine else "You slip away from its swing."
 		K.CLASHED: return "CLASH! Blades meet - no damage."
-		K.BLOCKED: return "You GUARD the blow!" if mine else "It guards your swing!"
+		K.BLOCKED: return "You GUARD the blow! It loses footing." if mine else "It guards your swing! You lose footing."
+		K.PUNISHED: return "Its telegraphed swing glances off. -%d" % e.amount if mine else "Your telegraphed swing is punished! -%d" % e.amount
+		K.GUARD_SHATTERED: return "You SHATTER its tired guard! -%d" % e.amount if mine else "Your tired guard SHATTERS! -%d" % e.amount
 		K.GUARD_BROKEN: return "You shove through its guard! -%d" % e.amount if mine else "It shoves through your guard! -%d" % e.amount
 		K.SHOVED: return "You shove it. -%d" % e.amount if mine else "It shoves you. -%d" % e.amount
+		K.SHOVED_AWAY: return "You shove it out of the room!" if mine else "You're shoved out of the room!"
+		K.PINNED: return "You slam it into the wall!" if mine else "You're slammed into the wall!"
+		K.REPOSITIONED: return "You turn the fight around." if mine else "It turns the fight around."
+		K.INITIATIVE:
+			if e.actor < 0:
+				return "Stalemate - nobody holds the initiative."
+			return "You seize the INITIATIVE." if mine else "The enemy seizes the INITIATIVE."
 		K.SHOVES_CANCELLED: return "You push off each other."
 		K.STAGGERED: return "You are STAGGERED!" if mine else "The enemy is STAGGERED!"
 		K.BUMPED: return "You collide in the hallway!" if mine else ""
-		K.CAUGHT: return "You chase it down! -%d" % e.amount if mine else "It chases you down! -%d" % e.amount
-		K.OVEREXTENDED: return "You lunge after nothing - overextended!" if mine else "It lunges after you and overextends!"
+		K.CAUGHT: return "You cut it down as it runs! -%d" % e.amount if mine else "It catches you as you run! -%d" % e.amount
 		K.RETREATED: return "You vanish into the shadows." if mine else "The enemy vanishes in a puff of shadow!"
 		K.DIED: return "You have fallen." if mine else "The enemy is slain!"
 	return ""

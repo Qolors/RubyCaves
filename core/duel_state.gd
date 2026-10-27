@@ -22,6 +22,11 @@ var turn := 1
 var is_over := false
 ## Winning fighter id, or -1 for a draw (only meaningful when is_over).
 var winner := -1
+## Fighter id holding the initiative (wins Attack vs Attack), or -1. Won by an ambush or by
+## winning an exchange; lost on a stalemate or when the conflict ends.
+var initiative := -1
+## Rolls for Exhausted guards shattering. Seed it for reproducible sims.
+var rng := RandomNumberGenerator.new()
 ## Turn on which ambushes are disabled (the turn right after a conflict breaks up).
 var _no_ambush_turn := -1
 
@@ -60,12 +65,18 @@ func can_ambush(attacker_id: int) -> bool:
 	return a.cell.neighbor(a.facing) == b.cell and b.facing != Dirs.opposite(a.facing)
 
 
+## Footing this action would cost the fighter right now (0 when their next action is free).
+func cost_for(id: int, type: int) -> int:
+	var cost := DuelRules.footing_cost(type)
+	return 0 if cost > 0 and fighters[id].free_action else cost
+
+
 func can_afford(id: int, type: int) -> bool:
-	return DuelRules.focus_cost(type) <= fighters[id].focus
+	return not DuelRules.needs_footing(type) or cost_for(id, type) <= fighters[id].footing
 
 
 ## Legal actions for a fighter. include_unaffordable also lists conflict actions they lack the
-## Focus for, so the HUD can show them greyed out; resolve() only ever accepts affordable ones.
+## Footing for, so the HUD can show them greyed out; resolve() only ever accepts affordable ones.
 func get_available_actions(id: int, include_unaffordable := false) -> Array[PlayerAction]:
 	var list := _all_actions(id)
 	if include_unaffordable or not in_conflict:
@@ -96,10 +107,11 @@ func _all_actions(id: int) -> Array[PlayerAction]:
 	if in_conflict:
 		list.append(PlayerAction.new(T.ATTACK))
 		list.append(PlayerAction.new(T.GUARD))
+		# Guarding can also turn the pair around the tile, but only when sharing it.
+		if other(id).cell == c:
+			list.append(PlayerAction.new(T.GUARD, PlayerAction.Veer.LEFT))
+			list.append(PlayerAction.new(T.GUARD, PlayerAction.Veer.RIGHT))
 		list.append(PlayerAction.new(T.SHOVE))
-		# Pursuing only makes sense if the other one is able to run (and has the Focus to).
-		if DuelRules.pursue_enabled and _can_flee(other(id)) and can_afford(1 - id, T.RETREAT_BACK):
-			list.append(PlayerAction.new(T.PURSUE))
 		if not _can_flee(f):
 			return list  # winded: stand and fight
 		if c.is_open(bk):
@@ -230,13 +242,11 @@ func resolve(a0: PlayerAction, a1: PlayerAction) -> TurnResult:
 	if ambusher >= 0:
 		_resolve_ambush(ambusher, result)
 	elif in_conflict:
-		for i in 2:
-			fighters[i].focus = clampi(fighters[i].focus - DuelRules.focus_cost(acts[i].type), 0, DuelRules.MAX_FOCUS)
 		_resolve_conflict(acts, result)
 	else:
 		_resolve_movement(acts, result)
-		for f in fighters:
-			f.focus = mini(f.focus + DuelRules.FOCUS_REGEN, DuelRules.MAX_FOCUS)
+		for i in 2:
+			_add_footing(fighters[i], DuelRules.regen_for(acts[i].type))
 
 	_check_deaths(result)
 	turn += 1
@@ -259,21 +269,66 @@ func _resolve_ambush(id: int, result: TurnResult) -> void:
 	b.hp -= DuelRules.AMBUSH_DAMAGE
 	result.add(K.AMBUSHED, id, b.id, DuelRules.AMBUSH_DAMAGE)
 	_start_conflict(result)
+	_set_initiative(id, result)
 
 
 ## Conflict triangle: Attack beats Shove, Guard beats Attack, Shove beats Guard.
-## Attack vs Attack clashes harmlessly. Fleeing dodges all of those, but Pursue catches a flee
-## (and loses to everything else). Every flee attempt leaves the fleer winded.
+## Attack vs Attack goes to whoever holds the initiative, else it clashes harmlessly.
+## Fleeing dodges Guard and Shove, but an Attack chases the fleer down.
+## Every flee attempt leaves the fleer winded.
 func _resolve_conflict(acts: Array[PlayerAction], result: TurnResult) -> void:
-	if acts[0].type == T.ATTACK and acts[1].type == T.ATTACK:
+	# Exhaustion is judged on the Footing you went into the exchange with.
+	var exhausted := [fighters[0].is_exhausted(), fighters[1].is_exhausted()]
+	for i in 2:
+		_add_footing(fighters[i], -cost_for(i, acts[i].type))
+		fighters[i].free_action = false
+
+	var t0 := acts[0].type
+	var t1 := acts[1].type
+	# Who came out ahead this exchange: a fighter id, STALEMATE, or -1 (no change).
+	var round_winner := -1
+	if t0 == T.ATTACK and t1 == T.ATTACK and initiative < 0:
 		result.add(K.CLASHED, -1)
-	elif acts[0].type == T.SHOVE and acts[1].type == T.SHOVE:
-		result.add(K.SHOVES_CANCELLED, -1)
+		round_winner = STALEMATE
+	elif t0 == T.ATTACK and t1 == T.ATTACK:
+		round_winner = initiative
+		_hit(round_winner, _attack_damage(exhausted[round_winner]), result)
+	elif t0 == t1 and t0 in [T.SHOVE, T.GUARD]:
+		if t0 == T.SHOVE:
+			result.add(K.SHOVES_CANCELLED, -1)
+		round_winner = STALEMATE
 	else:
 		for i in 2:
-			_resolve_strike(i, acts[i].type, acts[1 - i], result)
+			var w := _resolve_strike(i, acts[i], acts[1 - i], exhausted, result)
+			if w >= 0:
+				round_winner = w
 
+	var caught := _resolve_flees(acts, exhausted, result)
+	if caught >= 0:
+		round_winner = caught
+	if not in_conflict:
+		return
+	if round_winner == STALEMATE:
+		_set_initiative(-1, result)
+	elif round_winner >= 0:
+		_set_initiative(round_winner, result)
+	# A guard that held (wasn't shattered or shoved) sets up a free follow-up, and turns the
+	# pair around the tile if a reposition was picked.
+	if round_winner == STALEMATE:
+		return
+	for i in 2:
+		if acts[i].type != T.GUARD or fighters[i].staggered or acts[1 - i].type == T.SHOVE:
+			continue
+		fighters[i].free_action = true
+		if acts[i].veer != PlayerAction.Veer.NONE and fighters[0].cell == fighters[1].cell:
+			_reposition(i, acts[i].veer, result)
+
+
+## Fleers move; an attacker chases theirs down. Ends the conflict if they come apart.
+## Returns the id of a fighter who caught a flee, else -1.
+func _resolve_flees(acts: Array[PlayerAction], exhausted: Array, result: TurnResult) -> int:
 	var plans := [_plan_for(fighters[0], acts[0]), _plan_for(fighters[1], acts[1])]
+	var caught := -1
 	for i in 2:
 		if not acts[i].is_retreat():
 			continue
@@ -282,7 +337,7 @@ func _resolve_conflict(acts: Array[PlayerAction], result: TurnResult) -> void:
 		fighters[i].winded_until = turn + DuelRules.winded_turns
 		result.add(K.RETREATED, i)
 
-		if acts[1 - i].type != T.PURSUE:
+		if acts[1 - i].type != T.ATTACK:
 			continue
 		# Read the flee: follow them wherever they went, hit them, and keep them in the fight.
 		# The fleer is caught from behind and spins round; both end up on one line.
@@ -290,70 +345,120 @@ func _resolve_conflict(acts: Array[PlayerAction], result: TurnResult) -> void:
 		chaser.cell = fighters[i].cell
 		fighters[i].facing = Dirs.opposite(plans[i].move_dir)
 		chaser.facing = plans[i].move_dir
-		fighters[i].hp -= DuelRules.PURSUE_DAMAGE
-		result.add(K.CAUGHT, chaser.id, i, DuelRules.PURSUE_DAMAGE)
+		var dmg := _attack_damage(exhausted[chaser.id])
+		fighters[i].hp -= dmg
+		result.add(K.CAUGHT, chaser.id, i, dmg)
+		caught = chaser.id
 
 	if not acts[0].is_retreat() and not acts[1].is_retreat():
-		return
-
+		return caught
 	if fighters[0].cell != fighters[1].cell:
-		in_conflict = false
-		result.add(K.CONFLICT_ENDED, -1)
-		# Squaring up in a corner can leave someone facing a wall. Turn them to an open side by a
-		# fixed rule (right, left, back) that ignores where the fleer went, so it leaks nothing.
-		for f in fighters:
-			if not f.cell.is_open(f.facing):
-				f.facing = DuelMap.first_open(f.cell, f.facing)
-		# Breakaway: that auto-turn (or plain bad luck) must not hand out a free ambush the
-		# instant someone escapes, so ambushes are off for the next turn.
-		_no_ambush_turn = turn + 1
+		_end_conflict(result)
 	elif acts[0].is_retreat() and acts[1].is_retreat():
 		# Both fled into the same tile: they run straight into each other again.
 		_face_each_other_after_meeting(plans)
 		result.add(K.CONFLICT_STARTED, -1)
+	return caught
 
 
-## Applies fighter i's offensive action against the other's choice
-## (mirrored cases are handled by the other call).
-func _resolve_strike(i: int, mine: int, theirs: PlayerAction, result: TurnResult) -> void:
+## Applies fighter i's action against the other's choice (mirrored cases are handled by the
+## other call). Returns the id of whoever won the exchange because of it, else -1.
+func _resolve_strike(i: int, mine: PlayerAction, theirs: PlayerAction, exhausted: Array, result: TurnResult) -> int:
+	var me := fighters[i]
 	var target := other(i)
-	match mine:
+	match mine.type:
 		T.ATTACK:
 			if theirs.is_retreat():
-				result.add(K.ATTACK_DODGED, i, target.id)
-			elif theirs.type == T.GUARD:
-				fighters[i].staggered = true
-				result.add(K.BLOCKED, target.id, i)
-				result.add(K.STAGGERED, i)
-			else:
-				target.hp -= DuelRules.ATTACK_DAMAGE
-				result.add(K.ATTACKED, i, target.id, DuelRules.ATTACK_DAMAGE)
-		T.PURSUE:
-			# Lunging after someone who didn't run. vs Attack the attack lands (other call);
-			# vs Shove the shove handles it; vs Guard the pursuer over-commits into the block.
-			if theirs.type == T.GUARD:
-				fighters[i].staggered = true
-				result.add(K.OVEREXTENDED, i)
-				result.add(K.STAGGERED, i)
+				return -1  # _resolve_flees chases them down
+			if theirs.type != T.GUARD:
+				_hit(i, _attack_damage(exhausted[i]), result)
+				return i
+			if exhausted[i]:
+				# Telegraphed: the guard sees it coming and makes the attacker pay for it.
+				_hold_guard(target.id, i, result)
+				me.hp -= DuelRules.CHIP_DAMAGE
+				result.add(K.PUNISHED, target.id, i, DuelRules.CHIP_DAMAGE)
+				return target.id
+			if exhausted[target.id] and rng.randf() < DuelRules.SHATTER_CHANCE:
+				target.hp -= DuelRules.WEAK_DAMAGE
+				target.staggered = true
+				result.add(K.GUARD_SHATTERED, i, target.id, DuelRules.WEAK_DAMAGE)
+				result.add(K.STAGGERED, target.id)
+				return i
+			_hold_guard(target.id, i, result)
+			return target.id
 		T.SHOVE:
 			if theirs.type == T.GUARD:
 				target.hp -= DuelRules.SHOVE_DAMAGE
-				target.staggered = true
 				result.add(K.GUARD_BROKEN, i, target.id, DuelRules.SHOVE_DAMAGE)
-				result.add(K.STAGGERED, target.id)
-			elif theirs.type == T.PURSUE:
-				# Shoving someone who is charging in knocks them clean off balance.
-				target.hp -= DuelRules.SHOVE_DAMAGE
-				target.staggered = true
-				result.add(K.SHOVED, i, target.id, DuelRules.SHOVE_DAMAGE)
-				result.add(K.OVEREXTENDED, target.id)
-				result.add(K.STAGGERED, target.id)
-			elif theirs.type == T.WAIT:
-				# Pushing someone who is already off balance hurts, but can't chain another stagger.
+				_add_footing(me, 1)  # landing on a guard refunds the shove
+				_push(i, true, result)
+				return i
+			if theirs.type == T.WAIT:
+				# Pushing someone already off balance hurts, but can't chain another stun.
 				target.hp -= DuelRules.SHOVE_DAMAGE
 				result.add(K.SHOVED, i, target.id, DuelRules.SHOVE_DAMAGE)
+				_push(i, false, result)
+				return i
 			# vs Attack: the shove is stuffed (the attack's damage is applied by the other call).
 			# vs Retreat: the shove meets air.
+	return -1
+
+
+const STALEMATE := -2
+
+
+static func _attack_damage(telegraphed: bool) -> int:
+	return DuelRules.WEAK_DAMAGE if telegraphed else DuelRules.ATTACK_DAMAGE
+
+
+func _hit(attacker: int, dmg: int, result: TurnResult) -> void:
+	other(attacker).hp -= dmg
+	result.add(K.ATTACKED, attacker, 1 - attacker, dmg)
+
+
+## Guard g stopped attacker a's swing: g gets BLOCK_GAIN in all (its +1 was paid up front)
+## and a loses BLOCK_STRIP.
+func _hold_guard(g: int, a: int, result: TurnResult) -> void:
+	_add_footing(fighters[g], DuelRules.BLOCK_GAIN + DuelRules.footing_cost(T.GUARD))
+	var stripped := mini(DuelRules.BLOCK_STRIP, fighters[a].footing)
+	fighters[a].footing -= stripped
+	result.add(K.BLOCKED, g, a, stripped)
+
+
+## Shover i drives the other one backwards along i's facing: out of the tile if there is
+## room behind them (the conflict breaks), else into the wall (stunned, when can_stun).
+func _push(i: int, can_stun: bool, result: TurnResult) -> void:
+	var target := other(i)
+	var behind := target.cell.neighbor(fighters[i].facing)
+	if behind != null:
+		target.cell = behind
+		result.add(K.SHOVED_AWAY, i, target.id)
+		_end_conflict(result)
+	elif can_stun:
+		target.staggered = true
+		result.add(K.PINNED, i, target.id)
+		result.add(K.STAGGERED, target.id)
+
+
+## Turns guard g 90 degrees toward veer and squares the foe up opposite, on the same tile.
+## The foe's back ends up toward the guard's new facing: line them up against a wall.
+func _reposition(g: int, veer: int, result: TurnResult) -> void:
+	var f := fighters[g]
+	f.facing = Dirs.left(f.facing) if veer == PlayerAction.Veer.LEFT else Dirs.right(f.facing)
+	other(g).facing = Dirs.opposite(f.facing)
+	result.add(K.REPOSITIONED, g, f.facing)
+
+
+static func _add_footing(f: Fighter, amount: int) -> void:
+	f.footing = clampi(f.footing + amount, 0, DuelRules.MAX_FOOTING)
+
+
+func _set_initiative(id: int, result: TurnResult) -> void:
+	if initiative == id:
+		return
+	initiative = id
+	result.add(K.INITIATIVE, id)
 
 
 func _resolve_movement(acts: Array[PlayerAction], result: TurnResult) -> void:
@@ -411,6 +516,22 @@ func _start_conflict(result: TurnResult) -> void:
 	result.add(K.CONFLICT_STARTED, -1)
 
 
+func _end_conflict(result: TurnResult) -> void:
+	in_conflict = false
+	initiative = -1
+	for f in fighters:
+		f.free_action = false
+	result.add(K.CONFLICT_ENDED, -1)
+	# Squaring up in a corner can leave someone facing a wall. Turn them to an open side by a
+	# fixed rule (right, left, back) that ignores where the fleer went, so it leaks nothing.
+	for f in fighters:
+		if not f.cell.is_open(f.facing):
+			f.facing = DuelMap.first_open(f.cell, f.facing)
+	# Breakaway: that auto-turn (or plain bad luck) must not hand out a free ambush the
+	# instant someone escapes, so ambushes are off for the next turn.
+	_no_ambush_turn = turn + 1
+
+
 func _check_deaths(result: TurnResult) -> void:
 	var d0 := fighters[0].is_dead()
 	var d1 := fighters[1].is_dead()
@@ -422,4 +543,5 @@ func _check_deaths(result: TurnResult) -> void:
 		result.add(K.DIED, 1)
 	is_over = true
 	in_conflict = false
+	initiative = -1
 	winner = -1 if (d0 and d1) else (1 if d0 else 0)

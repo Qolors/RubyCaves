@@ -17,7 +17,7 @@ func _init() -> void:
 	if not "--quick" in OS.get_cmdline_user_args():
 		run_soak()
 		run_ab()
-		run_focus_ab()
+		run_footing_ab()
 	print("ALL PASSED" if fails == 0 else "%d FAILED" % fails)
 	quit(1 if fails > 0 else 0)
 
@@ -93,39 +93,41 @@ func run_rules() -> void:
 	var r := s.resolve(A(T.AMBUSH), A(T.MOVE_FORWARD))
 	check(s.fighters[1].hp == 6 and s.in_conflict and s.fighters[1].cell.id == "Top_SW" and s.fighters[0].cell.id == "Top_SW", "ambush: -4, input cancelled, conflict same tile")
 	check(s.fighters[1].facing == Dirs.NORTH, "victim turns to face ambusher")
-	s.resolve(A(T.ATTACK), A(T.ATTACK))
-	check(s.fighters[0].hp == 10 and s.fighters[1].hp == 6 and s.in_conflict, "attack vs attack clashes, no damage")
-	s.resolve(A(T.ATTACK), retreats(s.get_available_actions(1))[0])
-	check(s.fighters[1].hp == 6 and not s.in_conflict, "retreat dodges and ends conflict")
+	check(s.initiative == 0 and r.has(K.INITIATIVE, 0), "landing an ambush takes the initiative")
+	r = s.resolve(A(T.ATTACK), A(T.ATTACK))
+	check(s.fighters[0].hp == 10 and s.fighters[1].hp == 4 and not r.has(K.CLASHED) and s.initiative == 0, "attack vs attack: initiative holder wins it")
+	s.resolve(A(T.GUARD), retreats(s.get_available_actions(1))[0])
+	check(s.fighters[1].hp == 4 and not s.in_conflict and s.initiative == -1, "retreat dodges a guard, ends conflict, clears initiative")
 
 	s = conf()
 	s.resolve(A(T.ATTACK), A(T.SHOVE))
 	check(s.fighters[1].hp == 8 and s.fighters[0].hp == 10, "attack beats shove")
 	s = conf()
 	r = s.resolve(A(T.ATTACK), A(T.GUARD))
-	check(s.fighters[1].hp == 10 and s.fighters[0].staggered and r.has(K.BLOCKED, 1), "guard blocks attack, attacker staggered")
-	var only := s.get_available_actions(0)
-	check(only.size() == 1 and only[0].equals(W()), "staggered fighter can only wait")
-	s.resolve(A(T.ATTACK), A(T.ATTACK))
-	check(s.fighters[0].hp == 8 and not s.fighters[0].staggered, "punish staggered player; stagger clears")
+	check(s.fighters[1].hp == 10 and not s.fighters[0].staggered and r.has(K.BLOCKED, 1), "guard blocks attack (no stagger now)")
+	check(s.initiative == 1 and s.fighters[1].free_action, "  block wins the exchange: initiative + free next action")
 	s = conf()
-	s.resolve(A(T.SHOVE), A(T.GUARD))
-	check(s.fighters[1].hp == 9 and s.fighters[1].staggered, "shove breaks guard: -1 + stagger")
+	r = s.resolve(A(T.SHOVE), A(T.GUARD))
+	check(s.fighters[1].hp == 9 and s.fighters[1].staggered and r.has(K.PINNED, 0) and s.in_conflict, "shove through guard into a wall: -1 + stunned, stays in tile")
+	var only := s.get_available_actions(1)
+	check(only.size() == 1 and only[0].equals(W()), "stunned fighter can only wait")
 	s.resolve(A(T.SHOVE), A(T.ATTACK))
-	check(s.fighters[1].hp == 8 and not s.fighters[1].staggered, "shove on waiting target: -1, no stagger chain")
+	check(s.fighters[1].hp == 8 and not s.fighters[1].staggered and s.in_conflict, "shove on a stunned target: -1, no stun chain")
 	s = conf()
 	r = s.resolve(A(T.SHOVE), A(T.SHOVE))
-	check(r.has(K.SHOVES_CANCELLED) and s.fighters[1].hp == 10, "shove vs shove cancels")
+	check(r.has(K.SHOVES_CANCELLED) and s.fighters[1].hp == 10 and s.initiative == -1, "shove vs shove cancels; stalemate loses the initiative")
 	s = conf()
 	s.resolve(A(T.GUARD), A(T.GUARD))
-	check(s.fighters[0].hp == 10 and s.fighters[1].hp == 10 and s.in_conflict, "guard vs guard nothing")
+	check(s.fighters[0].hp == 10 and s.fighters[1].hp == 10 and s.in_conflict and s.initiative == -1, "guard vs guard: stalemate, initiative lost")
+	check(not s.fighters[0].free_action and not s.fighters[1].free_action, "  stalemated guards earn no free action")
 
 	s = make("Top_W", Dirs.SOUTH, "Top_SW", Dirs.NORTH)
 	check(not s.can_ambush(0) and not s.can_ambush(1), "no ambush when facing each other")
 	r = s.resolve(A(T.MOVE_FORWARD, V.LEFT), A(T.MOVE_FORWARD))
-	check(s.in_conflict and r.has(K.BUMPED) and s.fighters[0].cell.id == "Top_W", "hallway swap -> bump conflict, positions held")
+	check(s.in_conflict and r.has(K.BUMPED) and s.fighters[0].cell.id == "Top_W" and s.initiative == -1, "hallway swap -> bump conflict, positions held, no initiative")
+	check(not s.get_available_actions(0).any(func(a): return a.type == T.GUARD and a.veer != V.NONE), "  no reposition across a doorway")
 	r = s.resolve(A(T.ATTACK), A(T.ATTACK))
-	check(s.in_conflict and s.fighters[0].hp == 10 and r.has(K.CLASHED), "bump conflict persists through a clash")
+	check(s.in_conflict and s.fighters[0].hp == 10 and r.has(K.CLASHED), "neutral attack vs attack clashes, no damage")
 
 	s = make("Top_NW", Dirs.EAST, "Top_NE", Dirs.WEST)
 	s.resolve(A(T.MOVE_FORWARD), A(T.MOVE_FORWARD))
@@ -157,8 +159,8 @@ func run_rules() -> void:
 	s = conf()
 	var p1_dash := s.get_available_actions(1).filter(func(a): return a.type == T.RETREAT_THROUGH)
 	check(p1_dash.size() == 1, "dash past offered when the way beyond is open")
-	s.resolve(A(T.ATTACK), p1_dash[0])
-	check(not s.in_conflict and s.fighters[1].cell.id == "Top_W" and s.fighters[1].hp == 10, "dash past dodges and goes through")
+	s.resolve(A(T.GUARD), p1_dash[0])
+	check(not s.in_conflict and s.fighters[1].cell.id == "Top_W" and s.fighters[1].hp == 10, "dash past slips a guard and goes through")
 	check(not s.can_ambush(0) and not s.can_ambush(1), "after dash past nobody has an ambush")
 
 	s = make("Top_W", Dirs.SOUTH, "Top_SW", Dirs.NORTH)
@@ -173,66 +175,123 @@ func run_rules() -> void:
 		var flee := first_of(t.get_available_actions(1), flee_type)
 		if flee == null:
 			continue
-		t.resolve(A(T.ATTACK), flee)
+		t.resolve(A(T.SHOVE), flee)
 		check(not t.in_conflict and t.fighters.all(func(f): return f.cell.is_open(f.facing)), "after %s: nobody faces a wall" % flee.label())
 		check(not t.can_ambush(0) and not t.can_ambush(1) and t.in_breakaway(), "after %s: breakaway turn, no ambush" % flee.label())
 
-	# --- Pursue & Winded ---
+	# --- Attack catches flees, Winded ---
 	for flee_type in [T.RETREAT_LEFT, T.RETREAT_RIGHT, T.RETREAT_THROUGH]:
 		var t := conf()
+		t.initiative = -1
 		var flee := first_of(t.get_available_actions(1), flee_type)
 		if flee == null:
 			continue
-		var rr := t.resolve(A(T.PURSUE), flee)
-		check(t.in_conflict and t.fighters[0].cell == t.fighters[1].cell and t.fighters[1].hp == 8 and rr.has(K.CAUGHT, 0), "pursue catches %s: -2, conflict continues in new cell" % flee.label())
-		check(t.fighters[0].facing == Dirs.opposite(t.fighters[1].facing), "  caught pair faces opposite")
+		var rr := t.resolve(A(T.ATTACK), flee)
+		check(t.in_conflict and t.fighters[0].cell == t.fighters[1].cell and t.fighters[1].hp == 8 and rr.has(K.CAUGHT, 0), "attack catches %s: -2, conflict continues in new cell" % flee.label())
+		check(t.fighters[0].facing == Dirs.opposite(t.fighters[1].facing) and t.initiative == 0, "  caught pair faces opposite; catcher takes the initiative")
 		check(retreats(t.get_available_actions(1)).is_empty(), "  caught fleer is winded: no flee options")
-		check(first_of(t.get_available_actions(0), T.PURSUE) == null, "  no pursue offered vs a winded foe")
+	check(not PlayerAction.Type.has("PURSUE"), "pursue is gone")
 	s = conf()
-	r = s.resolve(A(T.PURSUE), A(T.GUARD))
-	check(s.fighters[0].staggered and r.has(K.OVEREXTENDED, 0) and s.fighters[1].hp == 10, "guard beats pursue: pursuer staggered")
-	s = conf()
-	s.resolve(A(T.PURSUE), A(T.ATTACK))
-	check(s.fighters[0].hp == 8, "attack beats pursue: -2")
-	s = conf()
-	s.resolve(A(T.PURSUE), A(T.SHOVE))
-	check(s.fighters[0].hp == 9 and s.fighters[0].staggered, "shove beats pursue: -1 + stagger")
-	s = conf()
-	s.resolve(A(T.ATTACK), retreats(s.get_available_actions(1))[0])
+	s.resolve(A(T.GUARD), retreats(s.get_available_actions(1))[0])
 	check(not s.in_conflict and s.winded_turns_left(1) == 3, "escaping leaves the fleer winded for 3 turns")
 	s.resolve(W(), W())
 	s.resolve(W(), W())
 	s.resolve(W(), W())
 	check(s.winded_turns_left(1) == 0, "winded wears off after 3 turns")
 
-	# --- Focus ---
+	# --- Footing ---
 	s = conf()
-	check(s.fighters[0].focus == 3 and s.fighters[1].focus == 3, "ambush turn costs no focus")
+	check(s.fighters[0].footing == 3 and s.fighters[1].footing == 3, "ambush turn costs no footing")
 	s.resolve(A(T.ATTACK), A(T.GUARD))
-	check(s.fighters[0].focus == 1 and s.fighters[1].focus == 3, "attack spends 2 focus, guard caps at 3")
+	check(s.fighters[0].footing == 1 and s.fighters[1].footing == 3, "attack -1, blocked strips 1 more; guard caps at 3")
+	check(s.cost_for(1, T.SHOVE) == 0 and s.cost_for(1, T.ATTACK) == 0, "  after a held guard the next action is free")
+	s.resolve(A(T.GUARD), A(T.SHOVE))
+	check(s.fighters[1].footing == 3 and not s.fighters[1].free_action, "  free shove costs nothing and the freebie is used up")
 	s = conf()
-	s.resolve(A(T.ATTACK), A(T.ATTACK))
-	check(s.fighters[0].focus == 1 and s.fighters[1].focus == 1, "clash: both spend 2")
-	check(first_of(s.get_available_actions(0), T.ATTACK) == null, "can't attack on 1 focus")
-	check(first_of(s.get_available_actions(0, true), T.ATTACK) != null, "  ...but the HUD list still shows it (greyed)")
+	s.fighters[0].footing = 2
+	s.resolve(A(T.SHOVE), A(T.GUARD))
+	check(s.fighters[0].footing == 2, "shove landing on a guard refunds its footing")
+	s = conf()
+	s.resolve(A(T.SHOVE), A(T.ATTACK))
+	check(s.fighters[0].footing == 2 and s.fighters[1].footing == 2, "stuffed shove and attack each cost 1")
+	s = conf()
+	s.fighters[0].footing = 1
+	s.fighters[1].footing = 1
+	s.resolve(A(T.GUARD), A(T.ATTACK))
+	check(s.fighters[0].footing == 3 and s.fighters[1].footing == 0, "blocking a real attack: guard +2, attacker stripped to 0")
+	s = conf()
+	s.fighters[0].footing = 1
+	s.resolve(A(T.GUARD), A(T.GUARD))
+	check(s.fighters[0].footing == 2, "plain guard +1")
+
+	# Exhausted (0 Footing)
+	s = conf()
+	s.fighters[1].footing = 0
+	var tired := s.get_available_actions(1)
+	check(first_of(tired, T.ATTACK) != null and first_of(tired, T.GUARD) != null, "exhausted: attack and guard still allowed")
+	check(first_of(tired, T.SHOVE) == null and retreats(tired).is_empty(), "exhausted: can't afford shove or flee")
+	check(first_of(s.get_available_actions(1, true), T.SHOVE) != null, "  ...but the HUD list still shows them (greyed)")
+	s.initiative = 1
+	r = s.resolve(A(T.ATTACK), A(T.ATTACK))
+	check(s.fighters[0].hp == 9 and r.has(K.ATTACKED, 1), "telegraphed attack deals half damage")
+	s = conf()
+	s.fighters[0].footing = 0
 	r = s.resolve(A(T.ATTACK), A(T.GUARD))
-	check(not r.has(K.BLOCKED) and s.fighters[0].focus == 2 and s.fighters[1].focus == 2, "unaffordable attack becomes a wait (+1); guard +1")
+	check(s.fighters[0].hp == 9 and r.has(K.PUNISHED, 1) and s.fighters[1].hp == 10, "telegraphed attack into a guard takes chip damage")
+	var shattered := 0
+	var held := 0
+	for seed in 40:
+		var t := conf()
+		t.rng.seed = seed
+		t.fighters[1].footing = 0
+		var rr := t.resolve(A(T.ATTACK), A(T.GUARD))
+		if rr.has(K.GUARD_SHATTERED, 0):
+			shattered += 1
+			if shattered == 1:
+				check(t.fighters[1].hp == 9 and t.fighters[1].staggered and not t.fighters[1].free_action and t.initiative == 0, "  shattered guard: -1, stunned, attacker wins")
+		elif rr.has(K.BLOCKED, 1):
+			held += 1
+	check(shattered > 5 and held > 5 and shattered + held == 40, "exhausted guard shatters about half the time (%d/%d)" % [shattered, held])
 	s = conf()
-	s.resolve(A(T.SHOVE), A(T.SHOVE))
-	check(s.fighters[0].focus == 2, "shove spends 1")
+	s.fighters[0].footing = 0
+	s.fighters[1].footing = 0
+	r = s.resolve(A(T.ATTACK), A(T.GUARD))
+	check(not r.has(K.GUARD_SHATTERED) and r.has(K.PUNISHED), "a telegraphed attack never shatters a guard")
+
+	# Shove rework: out of the tile when there's room behind, else pinned.
+	s = make("Top_NW", Dirs.EAST, "Top_NE", Dirs.WEST)
+	s.resolve(A(T.MOVE_FORWARD), A(T.MOVE_FORWARD))
+	r = s.resolve(A(T.SHOVE), A(T.GUARD))
+	check(not s.in_conflict and s.fighters[1].cell.id == "Top_NE" and r.has(K.SHOVED_AWAY, 0) and s.in_breakaway(), "shove with room behind pushes the foe out; conflict disengages")
+	check(s.fighters.all(func(f): return f.cell.is_open(f.facing)), "  nobody faces a wall after the push")
+
+	# Guard reposition: turn the pair around the tile, then shove them into the wall.
+	s = make("Top_NW", Dirs.EAST, "Top_NE", Dirs.WEST)
+	s.resolve(A(T.MOVE_FORWARD), A(T.MOVE_FORWARD))
+	r = s.resolve(A(T.GUARD, V.RIGHT), A(T.ATTACK))
+	check(s.fighters[0].facing == Dirs.SOUTH and s.fighters[1].facing == Dirs.NORTH and r.has(K.REPOSITIONED, 0), "guard reposition right: East->South, foe squared up North")
+	r = s.resolve(A(T.SHOVE), A(T.GUARD))
+	check(s.in_conflict and s.fighters[1].staggered and r.has(K.PINNED, 0) and s.fighters[0].footing == 3, "  free shove pins the foe against the wall")
+	s = make("Top_NW", Dirs.EAST, "Top_NE", Dirs.WEST)
+	s.resolve(A(T.MOVE_FORWARD), A(T.MOVE_FORWARD))
+	s.resolve(A(T.GUARD, V.LEFT), A(T.GUARD))
+	check(s.fighters[0].facing == Dirs.EAST, "stalemated guard doesn't reposition")
+	s = make("Top_NW", Dirs.EAST, "Top_NE", Dirs.WEST)
+	s.resolve(A(T.MOVE_FORWARD), A(T.MOVE_FORWARD))
+	s.resolve(A(T.GUARD, V.LEFT), A(T.SHOVE))
+	check(s.fighters[0].cell.id == "Top_NW" and not s.in_conflict, "shoved guard doesn't reposition (pushed out instead)")
+
+	# Out-of-conflict recovery
 	s = conf()
-	s.fighters[1].focus = 0
-	var broke := s.get_available_actions(1)
-	check(broke.size() == 1 and broke[0].type == T.GUARD, "0 focus: guard is the only option")
-	check(first_of(s.get_available_actions(0), T.PURSUE) == null, "no pursue vs a foe too tired to flee")
-	r = s.resolve(A(T.SHOVE), A(T.ATTACK))
-	check(r.has(K.SHOVED, 0) and s.fighters[1].hp == 9 and s.fighters[1].focus == 1, "broke fighter's attack becomes a wait (+1) and gets shoved")
-	s = conf()
-	var flee1: PlayerAction = retreats(s.get_available_actions(1))[0]
-	s.resolve(A(T.GUARD), flee1)
-	check(not s.in_conflict and s.fighters[1].focus == 2, "fleeing spends 1")
+	s.resolve(A(T.GUARD), retreats(s.get_available_actions(1))[0])
+	check(not s.in_conflict and s.fighters[1].footing == 2, "fleeing spends 1")
 	s.resolve(W(), W())
-	check(s.fighters[1].focus == 3, "focus refills out of conflict")
+	s.fighters[0].footing = 0
+	s.fighters[1].footing = 0
+	var turn0 := first_of(s.get_available_actions(0), T.TURN_AROUND)
+	var move1: PlayerAction = s.get_available_actions(1).filter(func(a): return a.type in [T.MOVE_FORWARD, T.MOVE_LEFT, T.MOVE_RIGHT])[0]
+	s.resolve(turn0 if turn0 != null else W(), move1)
+	check(s.fighters[0].footing == 2 and s.fighters[1].footing == 1, "standing/turning recovers 2, moving recovers 1")
 
 
 func run_soak() -> void:
@@ -247,6 +306,7 @@ func run_soak() -> void:
 	var map := DuelMap.from_json(json)
 	for g in games:
 		var st := DuelState.new(map)
+		st.rng.seed = g
 		var b0 := BotBrain.new(0, g)
 		var b1 := BotBrain.new(1, g + 99999)
 		while not st.is_over and st.turn < 500:
@@ -273,9 +333,8 @@ func run_soak() -> void:
 
 func run_ab() -> void:
 	var map := DuelMap.from_json(json)
-	for cfg in [[false, 0], [true, 3]]:
-		DuelRules.pursue_enabled = cfg[0]
-		DuelRules.winded_turns = cfg[1]
+	for winded in [0, 3]:
+		DuelRules.winded_turns = winded
 		var spam_wins := 0
 		var norm_wins := 0
 		var dr := 0
@@ -295,15 +354,14 @@ func run_ab() -> void:
 				spam_wins += 1
 			else:
 				norm_wins += 1
-		print("A/B pursue=%s winded=%d: flee-spammer wins %.1f%%, normal %.1f%%, draw/unfinished %.1f%%, avg turns %.1f" % [
-			cfg[0], cfg[1], spam_wins / 40.0, norm_wins / 40.0, dr / 40.0, turns / 4000.0])
-	DuelRules.pursue_enabled = true
+		print("A/B winded=%d: flee-spammer wins %.1f%%, normal %.1f%%, draw/unfinished %.1f%%, avg turns %.1f" % [
+			winded, spam_wins / 40.0, norm_wins / 40.0, dr / 40.0, turns / 4000.0])
 	DuelRules.winded_turns = 3
 
 
-## Same bot on both sides, but one reads Focus (punishes a foe who can't attack) and one doesn't.
-## If Focus adds skill, reading it must win clearly more than half the time.
-func run_focus_ab() -> void:
+## Same bot on both sides, but one reads Footing and initiative and one doesn't.
+## If Footing adds skill, reading it must win clearly more than half the time.
+func run_footing_ab() -> void:
 	var map := DuelMap.from_json(json)
 	var games := 4000
 	var aware_wins := 0
@@ -323,5 +381,5 @@ func run_focus_ab() -> void:
 		elif st.winner == aware:
 			aware_wins += 1
 	var rate := aware_wins * 100.0 / games
-	print("focus A/B: focus-reading bot wins %.1f%%, draw/unfinished %.1f%%, avg turns %.1f" % [rate, draws * 100.0 / games, turns / float(games)])
-	check(rate > 55.0, "reading focus is a real edge")
+	print("footing A/B: footing-reading bot wins %.1f%%, draw/unfinished %.1f%%, avg turns %.1f" % [rate, draws * 100.0 / games, turns / float(games)])
+	check(rate > 55.0, "reading footing is a real edge")

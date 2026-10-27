@@ -19,8 +19,6 @@ enum Type {
 	ATTACK,
 	GUARD,
 	SHOVE,
-	## Chase a flee: catches any retreat, loses to everything else.
-	PURSUE,
 	RETREAT_BACK,
 	RETREAT_LEFT,
 	RETREAT_RIGHT,
@@ -29,6 +27,7 @@ enum Type {
 }
 
 ## Which way an auto-corner turn should go when a move lands in a T-junction.
+## On a Guard it is the reposition: the guard turns that way and the pair rotates around the tile.
 enum Veer { NONE, LEFT, RIGHT }
 
 var type: int
@@ -77,7 +76,6 @@ func label() -> String:
 		Type.ATTACK: base = "ATTACK"
 		Type.GUARD: base = "GUARD"
 		Type.SHOVE: base = "SHOVE"
-		Type.PURSUE: base = "PURSUE"
 		Type.RETREAT_BACK: base = "RETREAT"
 		Type.RETREAT_LEFT: base = "FLEE L"
 		Type.RETREAT_RIGHT: base = "FLEE R"

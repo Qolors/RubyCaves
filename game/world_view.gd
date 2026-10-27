@@ -428,7 +428,7 @@ func _puffs(origin: Vector3, right: Vector3, count: int) -> void:
 		t.chain().tween_callback(p.queue_free)
 
 
-## Shows the swing sprite for a moment (attack, ambush, shove, pursue).
+## Shows the swing sprite for a moment (attack, ambush, shove).
 func show_enemy_attack(seconds := 0.55) -> void:
 	_enemy_attack_time = seconds
 

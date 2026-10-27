@@ -10,17 +10,18 @@ var _rng := RandomNumberGenerator.new()
 var _last_seen: MapCell = null
 var _last_seen_turn := 0
 var _flee_bias: float
-## Reads Focus: shoves a foe who can't afford to attack. Off = the old pure-habit bot (for sims).
-var _focus_aware: bool
+## Reads Footing and initiative: swings at an Exhausted foe, presses its initiative, guards to
+## line the foe up against a wall. Off = the pure-habit bot (for sims).
+var _footing_aware: bool
 ## Decaying counts of the opponent's conflict picks; all flee directions share RETREAT_BACK.
 var _foe_habits := {}
 
 
 ## flee_bias: extra chance to flee in conflicts (used to sim a flee-spamming player).
-func _init(id: int, seed := -1, flee_bias := 0.0, focus_aware := true) -> void:
+func _init(id: int, seed := -1, flee_bias := 0.0, footing_aware := true) -> void:
 	_id = id
 	_flee_bias = flee_bias
-	_focus_aware = focus_aware
+	_footing_aware = footing_aware
 	if seed >= 0:
 		_rng.seed = seed
 	else:
@@ -78,25 +79,34 @@ func decide(state: DuelState) -> PlayerAction:
 func observe(result: TurnResult) -> void:
 	var theirs := result.actions[1 - _id]
 	var key := T.RETREAT_BACK if theirs.is_retreat() else theirs.type
-	if key in [T.ATTACK, T.GUARD, T.SHOVE, T.PURSUE, T.RETREAT_BACK]:
+	if key in [T.ATTACK, T.GUARD, T.SHOVE, T.RETREAT_BACK]:
 		_foe_habits[key] = _foe_habits.get(key, 0.0) * 0.8 + 1.0
 
 
 func _decide_conflict(state: DuelState, me: Fighter, foe: Fighter, options: Array[PlayerAction]) -> PlayerAction:
 	if options.size() == 1:
-		return options[0]  # staggered, or out of Focus with only Guard left
+		return options[0]  # stunned: forced to wait
 
-	# The foe is off balance and must wait: free hit (a shove if we can't afford a swing).
+	# The foe is off balance and must wait: a free hit.
 	if foe.staggered:
-		return _first(options, [T.ATTACK, T.SHOVE])
+		return _first(options, [T.ATTACK])
 
-	# Focus read: a foe who can't afford to attack can only guard, shove, pursue or run.
-	# Shove beats guard and pursue and cancels a shove, so it's the safe punish. At 0 Focus
-	# their only option is Guard, so it's a sure thing.
-	if _focus_aware and not state.can_afford(foe.id, T.ATTACK):
-		var shove := _pick(options, T.SHOVE)
-		if shove != null and (foe.focus == 0 or _rng.randf() < 0.75):
-			return shove
+	# The foe's back is to a wall: a shove there pins them (stun), so it's worth fishing for.
+	var foe_pinnable := foe.cell == me.cell and not me.cell.is_open(me.facing)
+
+	if _footing_aware:
+		# Exhausted foe: its attacks are Telegraphed and its guard may shatter, and it can't
+		# afford to shove or run unless its next action is free. Swing at it.
+		if foe.is_exhausted() and not foe.free_action and _rng.randf() < 0.7:
+			return _first(options, [T.ATTACK])
+		# Holding the initiative wins any trade of blows.
+		if state.initiative == _id and _rng.randf() < 0.45:
+			return _first(options, [T.ATTACK])
+		# Out of Footing ourselves: a guard recovers and punishes a swing.
+		if me.is_exhausted() and _rng.randf() < 0.6:
+			return _guard(options, me)
+		if foe_pinnable and _rng.randf() < 0.4:
+			return _first(options, [T.SHOVE])
 
 	var retreats := options.filter(func(o: PlayerAction): return o.is_retreat())
 	var losing := me.hp <= DuelRules.ATTACK_DAMAGE and foe.hp > DuelRules.ATTACK_DAMAGE
@@ -104,29 +114,40 @@ func _decide_conflict(state: DuelState, me: Fighter, foe: Fighter, options: Arra
 	if not retreats.is_empty() and _rng.randf() < retreat_chance:
 		return retreats[_rng.randi_range(0, retreats.size() - 1)]
 
-	var can_pursue := _pick(options, T.PURSUE) != null
 	# Counter the opponent's most common pick some of the time, otherwise mix it up.
 	if not _foe_habits.is_empty() and _rng.randf() < 0.55:
 		var favourite: int = _foe_habits.keys()[0]
 		for k in _foe_habits:
 			if _foe_habits[k] > _foe_habits[favourite]:
 				favourite = k
-		var counter := T.ATTACK
 		match favourite:
-			T.ATTACK: counter = T.GUARD
-			T.GUARD: counter = T.SHOVE
-			T.PURSUE: counter = T.GUARD
-			T.RETREAT_BACK: counter = T.PURSUE if can_pursue else T.ATTACK
-		return _first(options, [counter])
+			T.ATTACK: return _guard(options, me)
+			T.GUARD: return _first(options, [T.SHOVE])
+			_: return _first(options, [T.ATTACK])  # beats Shove and catches a flee
 	var roll := _rng.randf()
-	if can_pursue and roll < 0.12:
-		return _first(options, [T.PURSUE])
-	if roll < 0.5:
+	if roll < 0.45:
 		return _first(options, [T.ATTACK])
-	return _first(options, [T.GUARD if roll < 0.77 else T.SHOVE])
+	if roll < 0.75:
+		return _guard(options, me)
+	return _first(options, [T.SHOVE])
 
 
-## First affordable option of the given types, else Guard (always free in a conflict).
+## A guard, turning the pair so the foe's back is to a wall when that's on offer.
+func _guard(options: Array[PlayerAction], me: Fighter) -> PlayerAction:
+	if _footing_aware:
+		for o in options:
+			if o.type != T.GUARD or o.veer == PlayerAction.Veer.NONE:
+				continue
+			var turned := Dirs.left(me.facing) if o.veer == PlayerAction.Veer.LEFT else Dirs.right(me.facing)
+			if not me.cell.is_open(turned):
+				return o
+	for o in options:
+		if o.type == T.GUARD and o.veer == PlayerAction.Veer.NONE:
+			return o
+	return _first(options, [T.GUARD])
+
+
+## First affordable option of the given types, else Guard (always allowed in a conflict).
 func _first(options: Array[PlayerAction], types: Array) -> PlayerAction:
 	for t in types + [T.GUARD]:
 		var a := _pick(options, t)
