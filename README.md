@@ -40,7 +40,7 @@ Any of these can sit behind your own `.io` domain.
 - `game/`: `main.gd` (turn loop), `world_view.gd` (3D cells, billboard enemy, shadow vanish), `texture_factory.gd`, `dev_capture.gd`.
 - `ui/`: HUD, octagon tabs, FPV sword, debug minimap.
 - `data/figure8.json`: the map.
-- `assets/sprites/`: generated from `art_src/*.jpg` by `tools/process_sprites.gd`. `art_src/` is excluded from the build.
+- `assets/sprites/`: enemy idle strips (front, rear, left, right; 8 frames each), packed from `art_src/Enemy/<dir>/frame_*.png` by `tools/process_sprites.gd`. `art_src/` is excluded from the build.
 - `assets/fonts/VT323-Regular.ttf`: the bundled pixel font (SIL OFL, see `OFL.txt`). Browsers can't use system fonts.
 
 ## Rules (prototype)

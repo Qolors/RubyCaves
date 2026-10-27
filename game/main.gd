@@ -141,8 +141,6 @@ func _resolve(local: PlayerAction) -> void:
 		_hud.sword.guard()
 
 	var enemy_strikes := theirs in [T.ATTACK, T.SHOVE, T.AMBUSH]
-	if enemy_strikes:
-		_world.show_enemy_attack()
 	if theirs == T.GUARD:
 		_world.show_enemy_guard()
 	var enemy_lunges := enemy_strikes or result.has(K.BUMPED, BOT)
