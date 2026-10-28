@@ -40,14 +40,15 @@ Any of these can sit behind your own `.io` domain.
 - `game/`: `main.gd` (turn loop), `world_view.gd` (3D cells, billboard enemy, shadow vanish), `texture_factory.gd`, `dev_capture.gd`.
 - `ui/`: HUD, octagon tabs, FPV sword, debug minimap.
 - `data/figure8.json`: the map.
-- `assets/sprites/`: enemy idle strips (front, rear, left, right; 8 frames each), packed from `art_src/Enemy/<dir>/frame_*.png` by `tools/process_sprites.gd`. `art_src/` is excluded from the build.
+- `assets/sprites/`: enemy idle strips (front, rear, left, right; 8 frames each) and `enemy_actions.png` (front-view swing, block, block-hit and hit frames), packed from `art_src/Enemy/` by `tools/process_sprites.gd`, which lines the combat art up with the idle art by the feet. `art_src/` is excluded from the build.
 - `assets/fonts/VT323-Regular.ttf`: the bundled pixel font (SIL OFL, see `OFL.txt`). Browsers can't use system fonts.
 
 ## Rules (prototype)
 - Each turn lasts 10s. Both players lock in one action, then the actions play out at the same time.
 - Players spawn on opposite sides of the map. The spawn pair rotates every match, and every other cycle the sides swap.
 - Moving into a corner rounds it for you automatically. At a T-junction, the move splits into `^L` and `^R`. Walking into a junction with a side passage also offers a hook (`^L` / `^` / `^R`): you step in and turn down that passage in the same move.
-- After every fight turn, a report at the bottom of the view shows both picks, who won and why, and what changed (damage, Footing, initiative, stuns, free moves, a wall at someone's back).
+- Fight turns play as a staged sequence (`game/combat_director.gd`, overlay in `ui/combat_fx.gd`): a VS card with both picks while the enemy holds its pose, a verdict stamp (YOU WIN / LOSE THE EXCHANGE and the deciding rule), then the exchange with enemy animations and action-camera hits (shake, zoom punch, push, tilt, hitstop, slow-mo on the final blow). Tap the view to fast-forward.
+- Afterwards a report at the bottom of the view shows both picks, who won and why, and what changed (damage, Footing, initiative, stuns, free moves, a wall at someone's back).
 - You can only see straight ahead.
 - **Ambush**: you are 1 tile from the enemy and looking at its back or side. The enemy takes 4 damage, its action is cancelled, and a conflict starts.
 - **Conflict**: Attack beats Shove, Shove beats Guard, Guard beats Attack. Fleeing (back, left, right or dash past) dodges Guard and Shove, but an **Attack catches a flee**: the attacker follows, hits, and the fight goes on. Any flee leaves you **winded** (no fleeing) for 3 turns. A fleer vanishes in shadow, so the direction is hidden.

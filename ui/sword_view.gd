@@ -8,6 +8,8 @@ var _bob := 0.0
 var _swing := 0.0
 var _swing_power := 1.0
 var _guard := 0.0
+## Screen-shake offset, set by the HUD every frame.
+var jolt := Vector2.ZERO
 
 
 func _ready() -> void:
@@ -57,5 +59,5 @@ func _process(delta: float) -> void:
 	var bob_off := Vector2(sin(_bob * TAU) * 9.0, absf(sin(_bob * TAU)) * 8.0)
 	var swing_off := Vector2(-70.0, -25.0) * _swing * _swing_power
 	var guard_off := Vector2(-parent.size.x * 0.3, -h * 0.15) * _guard
-	position = Vector2(parent.size.x - w * 0.95, parent.size.y - h + 12.0) + sway + bob_off + swing_off + guard_off
+	position = Vector2(parent.size.x - w * 0.95, parent.size.y - h + 12.0) + sway + bob_off + swing_off + guard_off + jolt
 	rotation = -0.55 * _swing * _swing_power - 0.9 * _guard

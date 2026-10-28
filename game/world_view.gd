@@ -6,11 +6,25 @@ extends Node3D
 const CELL_SIZE := 2.0
 const WALL_HEIGHT := 2.2
 const EYE_HEIGHT := 1.05
-const ENEMY_HEIGHT := 1.55
+## World size of one sprite pixel: keeps the idle character 1.55 m tall (62 px of art).
+const ENEMY_PIXEL := 1.55 / 62.0
 const STEP_DURATION := 0.42
 ## Enemy idle animation: frames per directional strip, and playback speed.
 const ENEMY_FRAMES := 8
 const ENEMY_FPS := 8.0
+const FOV := 72.0
+## Frames in enemy_actions.png.
+const ACTION_FRAMES := 13
+## Front-view combat clips: frame indices into enemy_actions.png (order set by tools/process_sprites.gd).
+const CLIPS := {
+	"windup": [0, 1],
+	"strike": [2, 3],
+	"guard_up": [4, 5],
+	"guard_down": [6, 7],
+	"block_hit": [8, 9],
+	"hit": [10, 11, 12],
+	"stunned": [12],
+}
 
 
 ## Camera pose on the rails: world position plus yaw (radians, 0 = looking north / -Z).
@@ -34,9 +48,29 @@ var _front: Texture2D
 var _rear: Texture2D
 var _left: Texture2D
 var _right: Texture2D
+var _actions: Texture2D
+## Combat clip playing over the idle loop (empty = idle). Held clips stay on their last frame.
+var _clip: Array = []
+var _clip_time := 0.0
+var _clip_fps := 10.0
+var _clip_hold := false
+## Camera pose from the rails; the action-camera effects below are layered on top of it.
+var _cam_base := Pose.new(Vector3.ZERO, 0.0)
+## Shake strength 0..1; the visible shake is trauma squared, so small knocks stay subtle.
+var _trauma := 0.0
+var _noise := FastNoiseLite.new()
+## Added to the field of view (negative zooms in).
+var cam_zoom := 0.0
+## Dutch tilt in radians.
+var cam_roll := 0.0
+## Shift along the view direction in metres (positive leans in).
+var cam_push := 0.0
+## Extra height (negative drops the eye toward the floor).
+var cam_drop := 0.0
+## Running tween per action-camera channel, so a new move replaces the old one instead of fighting it.
+var _cam_tweens := {}
 var _enemy_facing := Dirs.NORTH
 var _enemy_flash := 0.0
-var _enemy_guard_time := 0.0
 var _materialize := 0.0
 var _vanished := false
 var _puff_tex := TextureFactory.puff()
@@ -62,7 +96,7 @@ func _ready() -> void:
 	add_child(world_env)
 
 	_camera = Camera3D.new()
-	_camera.fov = 72
+	_camera.fov = FOV
 	_camera.keep_aspect = Camera3D.KEEP_WIDTH
 	_camera.near = 0.05
 	_camera.far = 60.0
@@ -84,8 +118,10 @@ func _ready() -> void:
 	_rear = load("res://assets/sprites/enemy_rear.png")
 	_left = load("res://assets/sprites/enemy_left.png")
 	_right = load("res://assets/sprites/enemy_right.png")
+	_actions = load("res://assets/sprites/enemy_actions.png")
+	_noise.frequency = 0.5
 	_enemy = Sprite3D.new()
-	_enemy.hframes = ENEMY_FRAMES
+	_enemy.pixel_size = ENEMY_PIXEL
 	_enemy.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	_enemy.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	_enemy.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
@@ -98,8 +134,9 @@ func _ready() -> void:
 func _set_enemy_texture(tex: Texture2D) -> void:
 	if _enemy.texture == tex:
 		return
+	_enemy.frame = 0
 	_enemy.texture = tex
-	_enemy.pixel_size = ENEMY_HEIGHT / tex.get_height()
+	_enemy.hframes = ACTION_FRAMES if tex == _actions else ENEMY_FRAMES
 	_enemy.offset = Vector2(0, tex.get_height() / 2.0)
 
 
@@ -267,7 +304,14 @@ func revive() -> void:
 	_enemy_dead = false
 	_vanished = false
 	_enemy.scale = Vector3.ONE
+	_enemy.position = Vector3.ZERO
 	_enemy.visible = true
+	_clip = []
+	_trauma = 0.0
+	cam_zoom = 0.0
+	cam_roll = 0.0
+	cam_push = 0.0
+	cam_drop = 0.0
 
 
 ## Plays one resolved tick: glides the camera and enemy along the rails.
@@ -310,13 +354,94 @@ func flash_enemy() -> void:
 
 
 func kill_enemy() -> void:
+	if _enemy_dead:
+		return
 	_enemy_dead = true
 	create_tween().tween_property(_enemy, "scale", Vector3(1.2, 0.05, 1.0), 0.6).set_trans(Tween.TRANS_QUAD)
 
 
 func _apply_camera(p: Pose) -> void:
-	_camera.position = p.pos
-	_camera.rotation = Vector3(0, p.yaw, 0)
+	_cam_base = p
+	_update_camera()
+
+
+## Rail pose plus the action-camera layer: push, drop, roll, zoom and shake.
+func _update_camera() -> void:
+	var fwd := Vector3(-sin(_cam_base.yaw), 0, -cos(_cam_base.yaw))
+	var shake := _trauma * _trauma
+	var n := func(i: int) -> float: return _noise.get_noise_2d(_time * 25.0, i * 100.0) * shake
+	_camera.position = _cam_base.pos + fwd * cam_push + Vector3(n.call(0) * 0.08, cam_drop + n.call(1) * 0.06, 0)
+	_camera.rotation = Vector3(n.call(2) * 0.09, _cam_base.yaw + n.call(3) * 0.09, cam_roll + n.call(4) * 0.12)
+	_camera.fov = clampf(FOV + cam_zoom, 20.0, 110.0)
+
+
+# ---------- action camera ----------
+
+## Adds screen shake (0..1); stacks with whatever shake is already running.
+func shake(amount: float) -> void:
+	_trauma = minf(1.0, _trauma + amount)
+
+
+## Eases one action-camera channel (cam_zoom, cam_roll, cam_push, cam_drop) to a value.
+func cam_to(channel: String, value: float, seconds: float, trans := Tween.TRANS_QUAD) -> Tween:
+	var old: Tween = _cam_tweens.get(channel)
+	if old != null and old.is_valid():
+		old.kill()
+	var t := create_tween()
+	_cam_tweens[channel] = t
+	t.tween_property(self, channel, value, seconds).set_trans(trans).set_ease(Tween.EASE_OUT)
+	return t
+
+
+## Snaps a channel to a value, then eases it back to rest: the punch of an impact.
+func cam_kick(channel: String, value: float, recover: float) -> void:
+	cam_to(channel, 0.0, recover, Tween.TRANS_EXPO)
+	set(channel, value)  # the tween reads its start value on its first step, after this
+
+
+## Lets every action-camera channel settle back to the plain rail view.
+func cam_settle(seconds := 0.3) -> void:
+	for channel in ["cam_zoom", "cam_roll", "cam_push", "cam_drop"]:
+		cam_to(channel, 0.0, seconds)
+
+
+# ---------- enemy combat animation ----------
+
+## Plays a combat clip over the idle loop. hold: stay on the last frame until the next clip or idle.
+func play_enemy(clip: String, fps := 10.0, hold := false) -> void:
+	_clip = CLIPS[clip]
+	_clip_time = 0.0
+	_clip_fps = fps
+	_clip_hold = hold
+
+
+func enemy_idle() -> void:
+	_clip = []
+
+
+## Seconds a clip takes at the given speed.
+static func clip_length(clip: String, fps := 10.0) -> float:
+	return CLIPS[clip].size() / fps
+
+
+## Knocks the sprite away from the camera and lets it slide back (or toward it with a negative distance).
+func knock_enemy(distance: float, seconds := 0.35) -> void:
+	var away := _enemy_root.position - _camera.position
+	away.y = 0
+	if away.length_squared() < 0.0001:
+		return
+	var t := create_tween()
+	t.tween_property(_enemy, "position", away.normalized() * distance, 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	t.tween_property(_enemy, "position", Vector3.ZERO, seconds).set_trans(Tween.TRANS_SINE)
+
+
+## Where the enemy's chest is on screen, as a 0..1 fraction of the view (for hit sparks and damage numbers).
+func enemy_screen_point() -> Vector2:
+	var vp := _camera.get_viewport()
+	var p := _enemy_root.position + _enemy.position + Vector3.UP * ENEMY_PIXEL * 62.0 * 0.6
+	if vp == null or _camera.is_position_behind(p):
+		return Vector2(0.5, 0.4)
+	return _camera.unproject_position(p) / Vector2(vp.size)
 
 
 func _process(delta: float) -> void:
@@ -324,7 +449,20 @@ func _process(delta: float) -> void:
 	_torch.light_energy = 1.7 + sin(_time * 9.0) * 0.05 + sin(_time * 23.0) * 0.04
 
 	_enemy_flash = maxf(0.0, _enemy_flash - delta * 3.0)
-	_enemy_guard_time = maxf(0.0, _enemy_guard_time - delta)
+	_trauma = maxf(0.0, _trauma - delta * 1.6)
+	_update_camera()
+
+	if not _clip.is_empty() and not _enemy_dead:
+		_clip_time += delta
+		var i := int(_clip_time * _clip_fps)
+		if i >= _clip.size() and not _clip_hold:
+			_clip = []
+		else:
+			_set_enemy_texture(_actions)
+			_enemy.frame = _clip[mini(i, _clip.size() - 1)]
+	if not _clip.is_empty() and not _enemy_dead:
+		_tint_enemy()
+		return
 
 	# Pick the directional idle strip from the enemy's facing relative to our view.
 	var to_cam := _camera.position - _enemy_root.position
@@ -339,13 +477,14 @@ func _process(delta: float) -> void:
 		_set_enemy_texture(_left if facing.dot(_camera.global_basis.x) < 0.0 else _right)
 	if not _enemy_dead:
 		_enemy.frame = int(_time * ENEMY_FPS) % ENEMY_FRAMES
+	_tint_enemy()
 
+
+func _tint_enemy() -> void:
 	var tint := Color.WHITE
-	if _enemy_guard_time > 0.0:
-		tint = Color(0.6, 0.8, 1.3)
 	if _enemy_dead:
 		tint = Color(0.6, 0.15, 0.15)
-	_materialize = maxf(0.0, _materialize - delta * 3.0)
+	_materialize = maxf(0.0, _materialize - get_process_delta_time() * 3.0)
 	tint = tint.lerp(Color(0.1, 0.05, 0.15), _materialize)
 	_enemy.modulate = tint.lerp(Color(1.0, 0.2, 0.2), _enemy_flash)
 
@@ -423,6 +562,3 @@ func _puffs(origin: Vector3, right: Vector3, count: int) -> void:
 		t.tween_property(p, "modulate:a", 0.0, life).set_ease(Tween.EASE_IN)
 		t.chain().tween_callback(p.queue_free)
 
-
-func show_enemy_guard(seconds := 0.6) -> void:
-	_enemy_guard_time = seconds

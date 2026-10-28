@@ -5,6 +5,8 @@ extends Control
 
 signal action_chosen(action: PlayerAction)
 signal rematch_requested
+## The player tapped the world view while a fight turn plays out.
+signal fast_forward
 
 const T := PlayerAction.Type
 const RED := Color(1.0, 0.2, 0.2)
@@ -19,6 +21,7 @@ const INITIATIVE_COLOR := Color(0.55, 1.0, 0.55)
 var world_viewport: SubViewport
 var sword: SwordView
 var mini_map: MiniMap
+var fx: CombatFx
 
 var _enemy_hp_label: Label
 var _enemy_hp_fill: ColorRect
@@ -62,6 +65,8 @@ var _foe_initiative := false
 var _locked := false
 var _log: Array = []  # [text, time]
 var _clock := 0.0
+## Screen shake for the 2D layer (sword and cut-ins), 0..1; the 3D camera shakes on its own.
+var _trauma := 0.0
 
 
 func _ready() -> void:
@@ -91,6 +96,9 @@ func _build_world_area() -> Control:
 	var area := Control.new()
 	area.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	area.clip_contents = true
+	area.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.pressed or e is InputEventScreenTouch and e.pressed:
+			fast_forward.emit())
 
 	var container := SubViewportContainer.new()
 	container.stretch = true
@@ -112,6 +120,9 @@ func _build_world_area() -> Control:
 	_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	area.add_child(_flash)
+
+	fx = CombatFx.new()
+	area.add_child(fx)
 
 	# Enemy HP (top-left), turn timer (top-right).
 	var top := VBoxContainer.new()
@@ -462,6 +473,21 @@ func show_report(report: CombatReport, sticky: bool) -> void:
 	_report_time = _clock
 
 
+func hide_report() -> void:
+	_report.visible = false
+
+
+## While a fight turn plays out, the banner and message log step aside for the cut-ins.
+func set_cinematic(on: bool) -> void:
+	for c in [_banner, _messages]:
+		create_tween().tween_property(c, "modulate:a", 0.0 if on else 1.0, 0.15)
+
+
+## Jolts the 2D layer (sword, cut-ins); stacks with shake already running.
+func shake(amount: float) -> void:
+	_trauma = minf(1.0, _trauma + amount)
+
+
 func flash_screen(color: Color, alpha: float) -> void:
 	_flash.color = Color(color, alpha)
 	create_tween().tween_property(_flash, "color:a", 0.0, 0.5)
@@ -659,6 +685,10 @@ static func _short_label(a: PlayerAction, siblings := 1) -> String:
 
 func _process(delta: float) -> void:
 	_clock += delta
+	_trauma = maxf(0.0, _trauma - delta * 1.6)
+	var jolt := Vector2(randf_range(-1, 1), randf_range(-1, 1)) * _trauma * _trauma * 14.0
+	sword.jolt = jolt
+	fx.position = jolt
 	_log = _log.filter(func(l): return _clock - l[1] <= 5.0)
 	while _log.size() > 4:
 		_log.pop_front()

@@ -14,6 +14,13 @@ var matchup := ""
 var verdict := ""
 var color := NEUTRAL
 var lines: Array[String] = []
+## One-word headline for the cut-in ("BLOCKED!", "CLASH!").
+var stamp := ""
+## 1: we won the exchange, -1: we lost it, 0: even.
+var outcome := 0
+## Both picks, for the VS card ("" outside a fight, e.g. an ambush).
+var my_verb := ""
+var foe_verb := ""
 
 
 ## What the report needs from before the turn resolved.
@@ -35,13 +42,18 @@ static func build(r: TurnResult, before: Dictionary, s: DuelState, me: int) -> C
 		rep.matchup = "AMBUSH!"
 		rep.verdict = "You strike it from behind!" if mine else "Ambushed from behind!"
 		rep.color = GOOD if mine else BAD
+		rep.stamp = "AMBUSH!"
+		rep.outcome = 1 if mine else -1
 		rep.lines.append("Its move is cancelled; it spins to face you." if mine else "Your move is cancelled; you spin to face it.")
 	elif not before["in_conflict"] and r.has(K.CONFLICT_STARTED):
 		rep.matchup = "FACE OFF"
 		rep.verdict = "You run into each other."
+		rep.stamp = "FACE OFF!"
 		rep.lines.append("A neutral fight: nobody holds the INITIATIVE.")
 	elif before["in_conflict"]:
-		rep.matchup = "You %s  vs  Enemy %s" % [_verb(r.actions[me]), _verb(r.actions[foe])]
+		rep.my_verb = _verb(r.actions[me])
+		rep.foe_verb = _verb(r.actions[foe])
+		rep.matchup = "You %s  vs  Enemy %s" % [rep.my_verb, rep.foe_verb]
 		rep._judge(r, me)
 	else:
 		return null
@@ -69,52 +81,55 @@ func _judge(r: TurnResult, me: int) -> void:
 	var e: TurnEvent
 	if _find(r, K.GUARD_SHATTERED) != null:
 		e = _find(r, K.GUARD_SHATTERED)
-		_win(e.actor == me, "Exhausted guard SHATTERS!", "At 0 footing a guard can break under a full swing.")
+		_win(e.actor == me, "SHATTER!", "Exhausted guard SHATTERS!", "At 0 footing a guard can break under a full swing.")
 	elif _find(r, K.PUNISHED) != null:
 		e = _find(r, K.PUNISHED)
-		_win(e.actor == me, "Telegraphed swing PUNISHED", "At 0 footing an attack is slow: the guard hits back.")
+		_win(e.actor == me, "PUNISHED!", "Telegraphed swing PUNISHED", "At 0 footing an attack is slow: the guard hits back.")
 	elif _find(r, K.BLOCKED) != null:
-		_win(_find(r, K.BLOCKED).actor == me, "GUARD beats ATTACK", "")
+		_win(_find(r, K.BLOCKED).actor == me, "BLOCKED!", "GUARD beats ATTACK", "")
 	elif _find(r, K.CAUGHT) != null:
-		_win(_find(r, K.CAUGHT).actor == me, "ATTACK catches the flee", "Running from a swing gets you cut down.")
+		_win(_find(r, K.CAUGHT).actor == me, "CAUGHT!", "ATTACK catches the flee", "Running from a swing gets you cut down.")
 	elif _find(r, K.PINNED) != null:
 		e = _find(r, K.PINNED)
-		_win(e.actor == me, "SHOVE beats GUARD: slammed into the wall" if r.has(K.GUARD_BROKEN) else "Slammed into the wall", "")
+		_win(e.actor == me, "PINNED!", "SHOVE beats GUARD: slammed into the wall" if r.has(K.GUARD_BROKEN) else "Slammed into the wall", "")
 	elif _find(r, K.SHOVED_AWAY) != null:
 		e = _find(r, K.SHOVED_AWAY)
-		_win(e.actor == me, "SHOVE beats GUARD: shoved out of the room" if r.has(K.GUARD_BROKEN) else "Shoved out of the room", "")
+		_win(e.actor == me, "SHOVED OUT!", "SHOVE beats GUARD: shoved out of the room" if r.has(K.GUARD_BROKEN) else "Shoved out of the room", "")
 	elif r.has(K.CLASHED):
-		_neutral("CLASH! Blades bounce off", "Nobody held the INITIATIVE to win the trade.")
+		_neutral("CLASH!", "Blades bounce off", "Nobody held the INITIATIVE to win the trade.")
 	elif a == T.ATTACK and b == T.ATTACK:
-		_win(_find(r, K.ATTACKED).actor == me, "INITIATIVE wins the trade of blows", "")
+		_win(_find(r, K.ATTACKED).actor == me, "FIRST STRIKE!", "INITIATIVE wins the trade of blows", "")
 	elif _find(r, K.ATTACKED) != null:
 		e = _find(r, K.ATTACKED)
 		var other := r.actions[e.target].type
-		_win(e.actor == me, "ATTACK beats SHOVE" if other == T.SHOVE else "Free hit on a stunned fighter", "")
+		_win(e.actor == me, "COUNTER!" if other == T.SHOVE else "FREE HIT!", "ATTACK beats SHOVE" if other == T.SHOVE else "Free hit on a stunned fighter", "")
 	elif _find(r, K.SHOVED) != null:
-		_win(_find(r, K.SHOVED).actor == me, "Shove on a stunned fighter", "")
+		_win(_find(r, K.SHOVED).actor == me, "SHOVED!", "Shove on a stunned fighter", "")
 	elif r.has(K.SHOVES_CANCELLED):
-		_neutral("SHOVES cancel out: stalemate", "")
+		_neutral("STALEMATE", "SHOVES cancel out", "")
 	elif a == T.GUARD and b == T.GUARD:
-		_neutral("Both GUARD: stalemate", "")
+		_neutral("STALEMATE", "Both GUARD", "")
 	elif r.has(K.RETREATED, 1 - me) and r.has(K.RETREATED, me):
-		_neutral("You both run for it", "")
+		_neutral("SCATTER!", "You both run for it", "")
 	elif r.has(K.RETREATED, 1 - me):
-		_win(false, "It ESCAPES: a flee slips past a %s" % _verb(r.actions[me]), "Only an ATTACK catches a flee.")
+		_win(false, "ESCAPED!", "It ESCAPES: a flee slips past a %s" % _verb(r.actions[me]), "Only an ATTACK catches a flee.")
 	elif r.has(K.RETREATED, me):
-		_win(true, "You ESCAPE: a flee slips past a %s" % _verb(r.actions[1 - me]), "Only an ATTACK catches a flee.")
+		_win(true, "ESCAPED!", "You ESCAPE: a flee slips past a %s" % _verb(r.actions[1 - me]), "Only an ATTACK catches a flee.")
 	else:
-		_neutral("No contact", "")
+		_neutral("...", "No contact", "")
 
 
-func _win(mine: bool, text: String, why: String) -> void:
+func _win(mine: bool, word: String, text: String, why: String) -> void:
+	stamp = word
+	outcome = 1 if mine else -1
 	verdict = text
 	color = GOOD if mine else BAD
 	if why != "":
 		lines.append(why)
 
 
-func _neutral(text: String, why: String) -> void:
+func _neutral(word: String, text: String, why: String) -> void:
+	stamp = word
 	verdict = text
 	color = NEUTRAL
 	if why != "":

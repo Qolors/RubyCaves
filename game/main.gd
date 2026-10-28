@@ -18,6 +18,7 @@ var _bot: BotBrain
 var _hud: Hud
 var _world: WorldView
 var _dev: DevCapture
+var _director: CombatDirector
 
 var _phase := Phase.PLANNING
 var _time_left := 0.0
@@ -37,6 +38,8 @@ func _ready() -> void:
 	_world = WorldView.new()
 	_hud.world_viewport.add_child(_world)
 	_world.build_map(_map)
+	_director = CombatDirector.new(_world, _hud)
+	add_child(_director)
 
 	_hud.action_chosen.connect(_on_local_chose)
 	_hud.rematch_requested.connect(_start_match)
@@ -53,6 +56,8 @@ func _start_match() -> void:
 	_dev.apply_bot_override(_state)
 	_hud.mini_map.state = _state
 	_hud.hide_game_over()
+	_hud.hide_report()
+	_hud.fx.reset()
 	_hud.set_hp(DuelRules.MAX_HP, DuelRules.MAX_HP)
 	_world.revive()
 	var poses := WorldView.poses_for(_state, LOCAL)
@@ -133,59 +138,19 @@ func _resolve(local: PlayerAction) -> void:
 	_world.enemy_engaged = was_in_conflict or _state.in_conflict
 	_bot.observe(result)
 
-	var mine := result.actions[LOCAL].type
-	var theirs := result.actions[BOT].type
-	var i_moved := result.has(K.MOVED, LOCAL) or result.has(K.RETREATED, LOCAL) or result.has(K.AMBUSHED, LOCAL)
-	if i_moved:
-		_hud.sword.bob()
-	if mine in [T.ATTACK, T.SHOVE]:
-		_hud.sword.swing(false)
-	if mine == T.AMBUSH:
-		_hud.sword.swing(true)
-	if mine == T.GUARD:
-		_hud.sword.guard()
-
-	var enemy_strikes := theirs in [T.ATTACK, T.SHOVE, T.AMBUSH]
-	if theirs == T.GUARD:
-		_world.show_enemy_guard()
-	var enemy_lunges := enemy_strikes or result.has(K.BUMPED, BOT)
-
-	# Fleeing never shows its direction: the fleer dissolves into shadow where it stood and is only
-	# seen again next turn if it ended up in your sight line (e.g. a straight step back).
-	# A caught flee isn't an escape: you chased them down, so you see exactly where they are.
-	var enemy_fled := result.has(K.RETREATED, BOT) and not result.has(K.CAUGHT, LOCAL)
-	var enemy_end: Vector3 = before["enemy"] if enemy_fled else after["enemy"]
-	if enemy_fled:
-		_world.vanish()
-	if result.has(K.RETREATED, LOCAL) and not result.has(K.CAUGHT, BOT):
-		_hud.flash_screen(Color(0.08, 0.0, 0.12), 0.6)
-
-	get_tree().create_timer(0.18).timeout.connect(func():
-		for e in result.events:
-			match e.kind:
-				K.ATTACKED, K.AMBUSHED, K.GUARD_BROKEN, K.SHOVED, K.CAUGHT, K.GUARD_SHATTERED, K.PUNISHED:
-					if e.target == BOT:
-						_world.flash_enemy()
-					else:
-						_hud.flash_screen(Color(1, 0, 0), 0.6 if e.kind == K.AMBUSHED else 0.4)
-				K.CLASHED:
-					_hud.flash_screen(Color(1.0, 0.9, 0.6), 0.45)
-				K.BLOCKED:
-					_hud.flash_screen(Color(0.4, 0.7, 1.0), 0.35)
-		_hud.set_hp(_state.fighters[LOCAL].hp, _state.fighters[BOT].hp))
-
-	_world.animate(before["cam"], after["cam"], before["enemy"], enemy_end, _state.fighters[BOT].facing,
-		result.has(K.BUMPED, LOCAL), enemy_lunges, func():
-			if enemy_fled:
-				_world.snap_enemy(after["enemy"])
-			_after_resolve(result, before_turn))
-
-
-func _after_resolve(result: TurnResult, before_turn: Dictionary) -> void:
+	# Fighting turns are staged as a cut-in sequence; see CombatDirector.
 	var report := CombatReport.build(result, before_turn, _state, LOCAL)
 	if report != null:
-		_hud.show_report(report, _state.in_conflict)
+		_director.play(_state, result, report, before_turn, before, after, func(): _after_resolve(result))
+		return
 
+	if result.has(K.MOVED, LOCAL):
+		_hud.sword.bob()
+	_world.animate(before["cam"], after["cam"], before["enemy"], after["enemy"], _state.fighters[BOT].facing,
+		result.has(K.BUMPED, LOCAL), result.has(K.BUMPED, BOT), func(): _after_resolve(result))
+
+
+func _after_resolve(result: TurnResult) -> void:
 	if not _state.is_over:
 		_begin_planning()
 		return
